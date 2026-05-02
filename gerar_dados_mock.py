@@ -12,7 +12,7 @@ rng = np.random.default_rng(42)
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
 
-N_ROUNDS   = 25
+N_ROUNDS   = 13
 N_CLUBS    = 20
 PLAYERS_PER_CLUB = {1: 2, 2: 4, 3: 5, 4: 7, 5: 6, 6: 1}  # pos_id -> count per club
 
