@@ -71,8 +71,8 @@ def calcular_teto(df_rodada_real: pd.DataFrame, budget: float, formation: dict) 
     """
     import pulp
 
-    df = df_rodada_real.copy().reset_index(drop=True)
-    df = df[df["pontos"] >= 0].copy()
+    df = df_rodada_real.copy()
+    df = df[df["pontos"] >= 0].reset_index(drop=True)
     n = len(df)
 
     prob = pulp.LpProblem("teto", pulp.LpMaximize)
