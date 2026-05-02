@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+data/cache/
+data/historico.parquet
+data/time_rodada_*.csv
