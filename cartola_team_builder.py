@@ -13,6 +13,7 @@ Uso:
     python cartola_team_builder.py --token SEU_TOKEN --rodada 15
 """
 
+import os
 import logging
 import argparse
 import numpy as np
@@ -160,19 +161,31 @@ def otimizar_escalacao(
     feat_cols: list[str],
     budget: float = BUDGET,
     formation: dict = FORMATION,
-    capitao_bonus: float = 2.0,
+    capitao_bonus: float = 1.5,
     max_por_clube: int = 5,
+    alpha_pred: float = 0.3,
+    capitao_posicoes: tuple = (4, 5),
 ) -> pd.DataFrame:
     """
     ILP para maximizar pontos esperados respeitando formação, budget e limite por clube.
-    Retorna DataFrame com o time escalado + coluna `capitao`.
+
+    `alpha_pred` blends model prediction with the season-average prior:
+        score = alpha * model_pred + (1 - alpha) * media_num
+    Set 1.0 to trust the model fully, 0.0 to fall back to media_num only.
+
+    `capitao_posicoes` restricts who can wear the C — defaults to MEI/ATA, since
+    the captain bonus is wasted on positions with low ceiling (TEC, GOL, ZAG).
     """
     df = df_mercado.copy()
-    df["pts_pred"] = model.predict(df[[c for c in feat_cols if c in df.columns]].fillna(0))
-    df["pts_pred"] = df["pts_pred"].clip(lower=0)
+    raw_pred = model.predict(df[[c for c in feat_cols if c in df.columns]].fillna(0))
+    raw_pred = np.clip(raw_pred, 0, None)
+    media = df["media"].fillna(0).to_numpy() if "media" in df.columns else np.zeros(len(df))
+    df["pts_pred"] = alpha_pred * raw_pred + (1.0 - alpha_pred) * media
     df = df[~df["status_id"].isin([5, 7])].reset_index(drop=True)
 
     n = len(df)
+    cap_ok = {i for i in range(n) if df.loc[i, "posicao_id"] in capitao_posicoes}
+
     prob = pulp.LpProblem("cartola_escalacao", pulp.LpMaximize)
     x   = pulp.LpVariable.dicts("x",   range(n), cat="Binary")
     cap = pulp.LpVariable.dicts("cap", range(n), cat="Binary")
@@ -190,6 +203,8 @@ def otimizar_escalacao(
     prob += pulp.lpSum(cap[i] for i in range(n)) == 1
     for i in range(n):
         prob += cap[i] <= x[i]
+        if i not in cap_ok:
+            prob += cap[i] == 0
 
     for clube_id in df["clube_id"].unique():
         idx = df[df["clube_id"] == clube_id].index.tolist()
@@ -319,9 +334,10 @@ def run_pipeline(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Cartola FC ML Team Builder")
-    parser.add_argument("--token",  type=str,   default=None,  help="X-GLB-Token")
+    parser.add_argument("--token",  type=str,   default=None,
+                        help="X-GLB-Token (Bearer ...). Default: $CARTOLA_TOKEN")
     parser.add_argument("--rodada", type=int,   default=None,  help="Rodada alvo (padrão: atual)")
-    parser.add_argument("--budget", type=float, default=140.0, help="Orçamento em cartoletas")
+    parser.add_argument("--budget", type=float, default=160.0, help="Orçamento em cartoletas")
     args = parser.parse_args()
-
-    run_pipeline(token=args.token, rodada_alvo=args.rodada, budget=args.budget)
+    token = args.token or os.environ.get("CARTOLA_TOKEN")
+    run_pipeline(token=token, rodada_alvo=args.rodada, budget=args.budget)
