@@ -80,7 +80,7 @@ def calcular_teto(df_rodada_real: pd.DataFrame, budget: float, formation: dict) 
     cap = pulp.LpVariable.dicts("cap", range(n), cat="Binary")
 
     prob += pulp.lpSum(
-        df.loc[i, "pontos"] * x[i] + df.loc[i, "pontos"] * cap[i]
+        df.loc[i, "pontos"] * x[i] + 0.5 * df.loc[i, "pontos"] * cap[i]
         for i in range(n)
     )
     prob += pulp.lpSum(df.loc[i, "preco"] * x[i] for i in range(n)) <= budget
@@ -103,7 +103,7 @@ def calcular_teto(df_rodada_real: pd.DataFrame, budget: float, formation: dict) 
     cap_idx = [i for i in range(n) if pulp.value(cap[i]) == 1]
 
     pts = sum(df.loc[i, "pontos"] for i in escalados)
-    pts += df.loc[cap_idx[0], "pontos"] if cap_idx else 0
+    pts += 0.5 * df.loc[cap_idx[0], "pontos"] if cap_idx else 0
     return pts
 
 
@@ -122,7 +122,7 @@ def calcular_baseline_media(df_mercado: pd.DataFrame, budget: float, formation: 
     cap = pulp.LpVariable.dicts("cap", range(n), cat="Binary")
 
     prob += pulp.lpSum(
-        df.loc[i, "media"] * x[i] + df.loc[i, "media"] * cap[i]
+        df.loc[i, "media"] * x[i] + 0.5 * df.loc[i, "media"] * cap[i]
         for i in range(n)
     )
     prob += pulp.lpSum(df.loc[i, "preco"] * x[i] for i in range(n)) <= budget
@@ -144,7 +144,7 @@ def calcular_baseline_media(df_mercado: pd.DataFrame, budget: float, formation: 
     cap_idx = [i for i in range(n) if pulp.value(cap[i]) == 1]
 
     pts = sum(df.loc[i, "media"] for i in escalados)
-    pts += df.loc[cap_idx[0], "media"] if cap_idx else 0
+    pts += 0.5 * df.loc[cap_idx[0], "media"] if cap_idx else 0
     return pts
 
 
@@ -160,6 +160,7 @@ def rodar_backtest(
     budget: float = BUDGET,
     formation: dict = FORMATION,
     min_rodadas_treino: int = 5,
+    df_mercado_atual: pd.DataFrame = None,
 ) -> list[ResultadoRodada]:
     """
     Para cada rodada no intervalo [rodada_inicio, rodada_fim]:
@@ -168,6 +169,26 @@ def rodar_backtest(
       3. Compara com os pontos REAIS da rodada (que o modelo nunca viu)
     """
     resultados = []
+
+    # Lookup: clube_id -> nome (do histórico, que já mapeia ambos)
+    clubes_lookup = (
+        df_hist.dropna(subset=["clube_id", "clube_nome"])
+        .drop_duplicates("clube_id")
+        .set_index("clube_id")["clube_nome"]
+        .to_dict()
+    )
+
+    # Lookup: (rodada, clube_id) -> clube_adversario_id. Coluna pode não existir em
+    # parquets antigos — quando ausente, o adversário cai para "?" no log.
+    if not df_partidas.empty and "clube_adversario_id" in df_partidas.columns:
+        adv_lookup = (
+            df_partidas.dropna(subset=["clube_adversario_id"])
+            .drop_duplicates(["rodada", "clube_id"])
+            .set_index(["rodada", "clube_id"])["clube_adversario_id"]
+            .to_dict()
+        )
+    else:
+        adv_lookup = {}
 
     for rodada_alvo in range(rodada_inicio, rodada_fim + 1):
         log.info(f"── Backtesting rodada {rodada_alvo} ──")
@@ -197,6 +218,23 @@ def rodar_backtest(
             log.warning(f"Rodada {rodada_alvo}: sem dados reais, pulando.")
             continue
 
+        # /atletas/pontuados não retorna preco/media — vêm de mercado_atual.
+        # Usamos o snapshot atual como proxy (preços não variam drasticamente intra-temporada).
+        # Importante: NÃO importar status_id daqui — ele reflete "agora", não a rodada
+        # alvo (entre rodadas, todos os técnicos ficam com status_id=7 e quebram o ILP).
+        if df_mercado_atual is not None and not df_mercado_atual.empty:
+            df_rodada_real = df_rodada_real.drop(
+                columns=["preco", "media"], errors="ignore"
+            ).merge(
+                df_mercado_atual[["atleta_id", "preco", "media"]],
+                on="atleta_id", how="left",
+            )
+            df_rodada_real = df_rodada_real[df_rodada_real["preco"].notna()].reset_index(drop=True)
+            df_rodada_real["media"] = df_rodada_real["media"].fillna(0.0)
+            if df_rodada_real.empty:
+                log.warning(f"Rodada {rodada_alvo}: nenhum atleta cruzou com mercado_atual, pulando.")
+                continue
+
         # Enriquecer com features da rodada anterior (o que o modelo veria ao vivo)
         ultima_feat = (
             df_feat[df_feat["rodada"] == df_feat["rodada"].max()]
@@ -223,13 +261,35 @@ def rodar_backtest(
         pts_reais_lista = [reais.get(aid, 0) for aid in time_modelo["atleta_id"]]
         cap_idx = time_modelo["capitao"].values
         pts_modelo = sum(
-            p * 2 if c else p
+            p * 1.5 if c else p
             for p, c in zip(pts_reais_lista, cap_idx)
         )
 
         # Capitão
         cap_row = time_modelo[time_modelo["capitao"]].iloc[0]
         capitao_pts_reais = reais.get(cap_row["atleta_id"], 0)
+
+        # Anotar posição (string), adversário e pontos reais no lineup para o log/CSV
+        time_modelo["posicao"] = time_modelo["posicao_id"].map(POSICAO_NOME)
+        time_modelo["adversario"] = (
+            time_modelo["clube_id"]
+            .map(lambda cid: adv_lookup.get((rodada_alvo, cid)))
+            .map(clubes_lookup)
+            .fillna("?")
+        )
+        time_modelo["pontos_real"] = time_modelo["atleta_id"].map(reais).fillna(0.0)
+
+        log.info(f"Time escalado R{rodada_alvo}:")
+        for _, p in time_modelo.iterrows():
+            cap_flag = " (C)" if p["capitao"] else ""
+            apelido = (p["apelido"] or "")[:20]
+            clube = (p.get("clube_nome") or "")[:16]
+            adv = (p["adversario"] or "")[:16]
+            log.info(
+                f"  {p['posicao']:<3} {apelido:<20} {clube:<16} vs {adv:<16} "
+                f"avg={p['media']:>5.2f} preco={p['preco']:>5.1f} "
+                f"pts={p['pontos_real']:>5.1f}{cap_flag}"
+            )
 
         # Teto (oracle)
         pts_teto = calcular_teto(df_rodada_real, budget, formation)
@@ -359,12 +419,28 @@ def gerar_relatorio(resultados: list[ResultadoRodada], output_dir: Path = DATA_D
     ax4.legend(fontsize=8)
     ax4.grid(True, alpha=0.3)
 
-    plt.savefig(output_dir / "backtest_report.png", dpi=150, bbox_inches="tight")
-    log.info(f"Gráfico salvo em {output_dir / 'backtest_report.png'}")
+    plt.savefig(output_dir / "backtest" / "backtest_report.png", dpi=150, bbox_inches="tight")
+    log.info(f"Gráfico salvo em {output_dir / "backtest" / 'backtest_report.png'}")
 
     # ── Salvar CSV ──
-    df.to_csv(output_dir / "backtest_resultados.csv", index=False)
-    log.info(f"Resultados salvos em {output_dir / 'backtest_resultados.csv'}")
+    df.to_csv(output_dir / "backtest" / "backtest_resultados.csv", index=False)
+    log.info(f"Resultados salvos em {output_dir / "backtest" / 'backtest_resultados.csv'}")
+
+    # ── Lineups consolidados (uma linha por jogador escalado por rodada) ──
+    lineup_cols = ["posicao", "apelido", "clube_nome", "adversario", "capitao", "media", "preco", "pontos_real"]
+    lineup_frames = []
+    for r in resultados:
+        if r.time_escalado is None or r.time_escalado.empty:
+            continue
+        lineup = r.time_escalado.reindex(columns=lineup_cols).copy()
+        lineup.insert(0, "rodada", r.rodada)
+        lineup_frames.append(lineup)
+
+    if lineup_frames:
+        lineup_df = pd.concat(lineup_frames, ignore_index=True).rename(columns={"clube_nome": "clube"})
+        lineup_path = output_dir / "backtest" / "backtest_times.csv"
+        lineup_df.to_csv(lineup_path, index=False)
+        log.info(f"Lineups salvos em {lineup_path}")
 
     return df
 
@@ -375,9 +451,9 @@ def gerar_relatorio(resultados: list[ResultadoRodada], output_dir: Path = DATA_D
 
 def main():
     parser = argparse.ArgumentParser(description="Cartola FC — Backtesting Engine")
-    parser.add_argument("--inicio",  type=int, default=6,    help="Primeira rodada a testar (mín. 6)")
-    parser.add_argument("--fim",     type=int, default=20,   help="Última rodada a testar")
-    parser.add_argument("--budget",  type=float, default=140.0)
+    parser.add_argument("--inicio",  type=int, default=8,    help="Primeira rodada a testar (mín. 6)")
+    parser.add_argument("--fim",     type=int, default=14,   help="Última rodada a testar")
+    parser.add_argument("--budget",  type=float, default=150.0)
     args = parser.parse_args()
 
     # Carregar histórico salvo pelo pipeline principal
@@ -396,6 +472,16 @@ def main():
     partidas_file = DATA_DIR / "partidas.parquet"
     df_partidas = pd.read_parquet(partidas_file) if partidas_file.exists() else pd.DataFrame()
 
+    # Mercado atual (preco, media, status_id) — pré-requisito para budget realista
+    mercado_file = DATA_DIR / "mercado_atual.parquet"
+    if not mercado_file.exists():
+        raise FileNotFoundError(
+            "mercado_atual.parquet não encontrado. "
+            "Execute cartola_collector.py para gerar o snapshot."
+        )
+    df_mercado_atual = pd.read_parquet(mercado_file)
+    log.info(f"Mercado atual carregado: {len(df_mercado_atual)} atletas")
+
     # Rodar backtest
     resultados = rodar_backtest(
         df_hist=df_hist,
@@ -403,6 +489,7 @@ def main():
         rodada_inicio=args.inicio,
         rodada_fim=args.fim,
         budget=args.budget,
+        df_mercado_atual=df_mercado_atual,
     )
 
     if not resultados:
