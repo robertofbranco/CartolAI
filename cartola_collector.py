@@ -10,6 +10,7 @@ Uso:
     python cartola_collector.py --token SEU_TOKEN --rodadas 1 5 10
 """
 
+import os
 import time
 import json
 import logging
@@ -62,7 +63,7 @@ class CartolaAPI:
         self.session = requests.Session()
         self.session.headers.update({"Content-Type": "application/json"})
         if token:
-            self.session.headers["X-GLB-Token"] = token
+            self.session.headers["Authorization"] = token
         self.cache_dir = cache_dir
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -127,14 +128,18 @@ def coletar_historico(api: CartolaAPI, rodadas_alvo: list[int]) -> pd.DataFrame:
             continue
 
         atletas = data.get("atletas", {})
+        # /atletas/pontuados keys atletas by id in a dict but doesn't repeat
+        # the id inside the record. Preserve the dict key as atleta_id.
         if isinstance(atletas, dict):
-            atletas = list(atletas.values())
+            atletas_iter = [(int(k), v) for k, v in atletas.items()]
+        else:
+            atletas_iter = [(a.get("atleta_id"), a) for a in atletas]
 
-        for a in atletas:
+        for atleta_id, a in atletas_iter:
             scout = a.get("scout", {}) or {}
             registro = {
                 "rodada":     rodada,
-                "atleta_id":  a.get("atleta_id"),
+                "atleta_id":  atleta_id,
                 "apelido":    a.get("apelido"),
                 "posicao_id": a.get("posicao_id"),
                 "clube_id":   a.get("clube_id"),
@@ -174,14 +179,16 @@ def coletar_mercado_atual(api: CartolaAPI) -> pd.DataFrame:
 
 
 def preparar_partidas(api: CartolaAPI, rodadas_alvo: list[int]) -> pd.DataFrame:
-    """Extrai mando de campo (casa=1, fora=-1) por (rodada, clube_id)."""
+    """Extrai mando de campo (casa=1, fora=-1) e adversário por (rodada, clube_id)."""
     registros = []
     for rodada in tqdm(rodadas_alvo, desc="Coletando partidas"):
         try:
             data = api.partidas(rodada)
             for partida in data.get("partidas", []):
-                registros.append({"rodada": rodada, "clube_id": partida.get("clube_casa_id"),      "mando":  1})
-                registros.append({"rodada": rodada, "clube_id": partida.get("clube_visitante_id"), "mando": -1})
+                casa = partida.get("clube_casa_id")
+                fora = partida.get("clube_visitante_id")
+                registros.append({"rodada": rodada, "clube_id": casa, "mando":  1, "clube_adversario_id": fora})
+                registros.append({"rodada": rodada, "clube_id": fora, "mando": -1, "clube_adversario_id": casa})
         except Exception as e:
             log.warning(f"Partidas rodada {rodada}: {e}")
         time.sleep(0.2)
@@ -195,12 +202,13 @@ def preparar_partidas(api: CartolaAPI, rodadas_alvo: list[int]) -> pd.DataFrame:
 
 def main():
     parser = argparse.ArgumentParser(description="Cartola FC — Data Collector")
-    parser.add_argument("--token",   type=str, default=None, help="X-GLB-Token")
+    parser.add_argument("--token",   type=str, default=None,
+                        help="X-GLB-Token (Bearer ...). Default: $CARTOLA_TOKEN")
     parser.add_argument("--rodadas", type=int, nargs="+",   default=None,
                         help="Rodadas a coletar (padrão: todas até a rodada atual)")
     args = parser.parse_args()
-
-    api = CartolaAPI(token=args.token)
+    token = args.token or os.environ.get("CARTOLA_TOKEN")
+    api = CartolaAPI(token=token)
 
     status = api.mercado_status()
     rodada_atual = status.get("rodada_atual", status.get("rodada", {}).get("rodada_atual", 1))
@@ -215,13 +223,19 @@ def main():
     hist_file = DATA_DIR / "historico.parquet"
     if hist_file.exists():
         df_hist = pd.read_parquet(hist_file)
-        rodadas_faltando = [r for r in rodadas_alvo if r not in df_hist["rodada"].unique()]
-        if rodadas_faltando:
-            log.info(f"Coletando {len(rodadas_faltando)} rodadas novas...")
-            df_novo = coletar_historico(api, rodadas_faltando)
-            df_hist = pd.concat([df_hist, df_novo], ignore_index=True)
+        # Older runs persisted atleta_id=None for every row (bug in dict parsing).
+        # Detect that and rebuild from the on-disk cache.
+        if "atleta_id" not in df_hist.columns or df_hist["atleta_id"].isna().all():
+            log.warning("Histórico antigo com atleta_id nulo — recoletando do zero.")
+            df_hist = coletar_historico(api, rodadas_alvo)
         else:
-            log.info("Histórico já atualizado, nada a coletar.")
+            rodadas_faltando = [r for r in rodadas_alvo if r not in df_hist["rodada"].unique()]
+            if rodadas_faltando:
+                log.info(f"Coletando {len(rodadas_faltando)} rodadas novas...")
+                df_novo = coletar_historico(api, rodadas_faltando)
+                df_hist = pd.concat([df_hist, df_novo], ignore_index=True)
+            else:
+                log.info("Histórico já atualizado, nada a coletar.")
     else:
         df_hist = coletar_historico(api, rodadas_alvo)
 
@@ -235,6 +249,13 @@ def main():
         partidas_file = DATA_DIR / "partidas.parquet"
         df_partidas.to_parquet(partidas_file, index=False)
         log.info(f"Partidas salvas → {partidas_file}")
+
+    # ── Mercado atual (preco, media, status_id, jogos) ──
+    df_mercado_atual = coletar_mercado_atual(api)
+    if not df_mercado_atual.empty:
+        mercado_file = DATA_DIR / "mercado_atual.parquet"
+        df_mercado_atual.to_parquet(mercado_file, index=False)
+        log.info(f"Mercado atual salvo: {len(df_mercado_atual)} atletas → {mercado_file}")
 
 
 if __name__ == "__main__":
