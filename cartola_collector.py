@@ -153,6 +153,26 @@ def coletar_historico(api: CartolaAPI, rodadas_alvo: list[int]) -> pd.DataFrame:
     return df.sort_values(["atleta_id", "rodada"]).reset_index(drop=True)
 
 
+def coletar_mercado_atual(api: CartolaAPI) -> pd.DataFrame:
+    """
+    Snapshot do mercado vigente: preco, media, status, jogos por atleta.
+    /atletas/pontuados não traz esses campos, então eles vêm daqui.
+    """
+    data = api.atletas_mercado()
+    atletas = data.get("atletas", [])
+    rows = [{
+        "atleta_id":   a.get("atleta_id"),
+        "apelido":     a.get("apelido"),
+        "posicao_id":  a.get("posicao_id"),
+        "clube_id":    a.get("clube_id"),
+        "preco":       a.get("preco_num", 0.0),
+        "media":       a.get("media_num", 0.0),
+        "status_id":   a.get("status_id"),
+        "jogos":       a.get("jogos_num", 0),
+    } for a in atletas]
+    return pd.DataFrame(rows)
+
+
 def preparar_partidas(api: CartolaAPI, rodadas_alvo: list[int]) -> pd.DataFrame:
     """Extrai mando de campo (casa=1, fora=-1) por (rodada, clube_id)."""
     registros = []
