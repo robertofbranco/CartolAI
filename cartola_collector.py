@@ -23,13 +23,37 @@ from pathlib import Path
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
+
+def _load_dotenv(path: str | Path = ".env") -> None:
+    """
+    Carrega pares KEY=VALUE de um arquivo .env no os.environ. Não sobrescreve
+    variáveis já definidas (setdefault), pra que o ambiente real tenha
+    precedência sobre o arquivo. Sem dependência externa.
+    """
+    p = Path(path)
+    if not p.exists():
+        return
+    for line in p.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        v = v.strip().strip('"').strip("'")
+        os.environ.setdefault(k.strip(), v)
+
+
+_load_dotenv()
+
 # ──────────────────────────────────────────────
 # CONFIGURAÇÕES COMPARTILHADAS
 # ──────────────────────────────────────────────
 
 BASE_URL = "https://api.cartola.globo.com"
+GATOMESTRE_BASE = "https://api.gatomestre.globo.com"
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
+
+TEMPORADA_ATUAL = 2026
 
 FORMATION = {
     1: 1,  # GOL
@@ -107,6 +131,57 @@ class CartolaAPI:
         return self._get(path, use_cache=rodada is not None)
 
 
+class GatoMestreAPI:
+    """
+    Wrapper para o endpoint de favoritos do Gato Mestre, que devolve as
+    probabilidades (vitória / empate / derrota) por partida da rodada.
+
+    Auth: requer Bearer token em $GATOMESTRE_TOKEN (token JWT do globo.com).
+    A URL hardcoda o ano corrente — ajustar `temporada` ao virar a temporada.
+    """
+
+    def __init__(
+        self,
+        token: str,
+        temporada: int = 2026,
+        cache_dir: Path = DATA_DIR / "cache",
+    ):
+        self.session = requests.Session()
+        self.session.headers.update({
+            "Content-Type": "application/json",
+            "Authorization": token,
+        })
+        self.temporada = temporada
+        self.cache_dir = cache_dir
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+    def favoritos(self, rodada: int) -> dict:
+        """
+        Retorna odds da rodada `rodada`. O endpoint Gato Mestre indexa em
+        rodada-1, ou seja, /rodadas/{rodada-1} retorna a rodada `rodada`.
+        """
+        index = rodada - 1
+        cache_file = self.cache_dir / f"gato_favoritos_{self.temporada}_r{rodada}.json"
+        if cache_file.exists():
+            return json.loads(cache_file.read_text(encoding="utf-8"))
+
+        url = (
+            f"{GATOMESTRE_BASE}/api/v2/equipes/{self.temporada}"
+            f"/campeonato-brasileiro/favoritos/rodadas/{index}?a=true"
+        )
+        for attempt in range(3):
+            try:
+                r = self.session.get(url, timeout=15)
+                r.raise_for_status()
+                data = r.json()
+                cache_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+                return data
+            except requests.RequestException as e:
+                log.warning(f"Tentativa {attempt+1} falhou para favoritos r{rodada}: {e}")
+                time.sleep(2 ** attempt)
+        raise RuntimeError(f"Falha ao acessar favoritos da rodada {rodada}")
+
+
 # ──────────────────────────────────────────────
 # COLETA
 # ──────────────────────────────────────────────
@@ -178,6 +253,94 @@ def coletar_mercado_atual(api: CartolaAPI) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def coletar_odds(
+    gato_api: GatoMestreAPI,
+    clubes_raw: dict,
+    rodadas_alvo: list[int],
+) -> pd.DataFrame:
+    """
+    Coleta probabilidades do Gato Mestre para cada rodada. Retorna DataFrame
+    com uma linha POR TIME por partida (duas por jogo): home e away com as
+    probs reorientadas para a perspectiva de cada lado.
+
+    Colunas: rodada, clube_id, prob_win, prob_draw, prob_loss.
+    """
+    abbr_to_id = {}
+    for cid, c in clubes_raw.items():
+        abbr = (c.get("abreviacao") or "").upper()
+        if abbr:
+            abbr_to_id[abbr] = int(cid)
+
+    rows = []
+    for rodada in tqdm(rodadas_alvo, desc="Coletando odds"):
+        # Gato Mestre não publica odds da rodada 1 — começa a partir da 2.
+        if rodada < 2:
+            continue
+        try:
+            data = gato_api.favoritos(rodada)
+        except Exception as e:
+            log.warning(f"Odds rodada {rodada} indisponíveis: {e}")
+            continue
+
+        for match in data.get("result", []) or []:
+            home_abbr = (match.get("homeTeam", {}).get("abbr") or "").upper()
+            away_abbr = (match.get("awayTeam", {}).get("abbr") or "").upper()
+            home_id = abbr_to_id.get(home_abbr)
+            away_id = abbr_to_id.get(away_abbr)
+            if home_id is None or away_id is None:
+                log.warning(
+                    f"Rodada {rodada}: time sem mapeamento ({home_abbr} ou {away_abbr})"
+                )
+                continue
+            odds = match.get("odds", {}) or {}
+            win  = float(odds.get("win",  0)) / 100.0
+            tie  = float(odds.get("tie",  0)) / 100.0
+            loss = float(odds.get("loss", 0)) / 100.0
+            rows.append({
+                "rodada": rodada, "clube_id": home_id,
+                "prob_win": win, "prob_draw": tie, "prob_loss": loss,
+            })
+            rows.append({
+                "rodada": rodada, "clube_id": away_id,
+                "prob_win": loss, "prob_draw": tie, "prob_loss": win,
+            })
+        time.sleep(0.3)
+
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+
+def carregar_dataset(
+    temporadas_extras: tuple[int, ...] = (2022, 2023, 2024, 2025),
+    temporada_atual: int = TEMPORADA_ATUAL,
+    data_dir: Path = DATA_DIR,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Carrega histórico, partidas e odds da temporada atual e das passadas.
+    Toda linha sai com coluna `temporada` preenchida (a temporada atual recebe
+    a constante quando o parquet ainda não tem a coluna).
+
+    Retorna (df_hist, df_partidas, df_odds), todos podem ser DataFrame vazio.
+    """
+    def _load(path: Path, temporada: int) -> pd.DataFrame:
+        if not path.exists():
+            return pd.DataFrame()
+        df = pd.read_parquet(path)
+        if not df.empty and "temporada" not in df.columns:
+            df["temporada"] = temporada
+        return df
+
+    df_hist     = _load(data_dir / "historico.parquet",      temporada_atual)
+    df_partidas = _load(data_dir / "partidas.parquet",       temporada_atual)
+    df_odds     = _load(data_dir / "odds.parquet",           temporada_atual)
+
+    for year in temporadas_extras:
+        df_hist     = pd.concat([_load(data_dir / f"historico_{year}.parquet", year), df_hist], ignore_index=True)
+        df_partidas = pd.concat([_load(data_dir / f"partidas_{year}.parquet",  year), df_partidas], ignore_index=True)
+        df_odds     = pd.concat([_load(data_dir / f"odds_{year}.parquet",      year), df_odds], ignore_index=True)
+
+    return df_hist, df_partidas, df_odds
+
+
 def preparar_partidas(api: CartolaAPI, rodadas_alvo: list[int]) -> pd.DataFrame:
     """Extrai mando de campo (casa=1, fora=-1) e adversário por (rodada, clube_id)."""
     registros = []
@@ -204,10 +367,14 @@ def main():
     parser = argparse.ArgumentParser(description="Cartola FC — Data Collector")
     parser.add_argument("--token",   type=str, default=None,
                         help="X-GLB-Token (Bearer ...). Default: $CARTOLA_TOKEN")
+    parser.add_argument("--gato-token", type=str, default=None,
+                        help="Bearer token do Gato Mestre (para odds). "
+                             "Default: $GATOMESTRE_TOKEN. Sem token, odds são puladas.")
     parser.add_argument("--rodadas", type=int, nargs="+",   default=None,
                         help="Rodadas a coletar (padrão: todas até a rodada atual)")
     args = parser.parse_args()
     token = args.token or os.environ.get("CARTOLA_TOKEN")
+    gato_token = args.gato_token or os.environ.get("GATOMESTRE_TOKEN")
     api = CartolaAPI(token=token)
 
     status = api.mercado_status()
@@ -256,6 +423,19 @@ def main():
         mercado_file = DATA_DIR / "mercado_atual.parquet"
         df_mercado_atual.to_parquet(mercado_file, index=False)
         log.info(f"Mercado atual salvo: {len(df_mercado_atual)} atletas → {mercado_file}")
+
+    # ── Odds (Gato Mestre) ──
+    if gato_token:
+        gato_api = GatoMestreAPI(token=gato_token)
+        # Inclui a rodada_atual (próxima a ser jogada) para uso na inferência ao vivo
+        rodadas_para_odds = rodadas_alvo + [rodada_atual]
+        df_odds = coletar_odds(gato_api, api.clubes(), sorted(set(rodadas_para_odds)))
+        if not df_odds.empty:
+            odds_file = DATA_DIR / "odds.parquet"
+            df_odds.to_parquet(odds_file, index=False)
+            log.info(f"Odds salvas: {df_odds['rodada'].nunique()} rodadas → {odds_file}")
+    else:
+        log.info("GATOMESTRE_TOKEN não definido — odds não coletadas.")
 
 
 if __name__ == "__main__":
