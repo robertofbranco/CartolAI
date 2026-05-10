@@ -16,7 +16,6 @@ Requisitos: mesmo requirements.txt do pipeline principal
 import logging
 import warnings
 import argparse
-import numpy as np
 import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
@@ -24,7 +23,6 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import Optional
 
 from cartola_team_builder import (
     construir_features,
@@ -49,9 +47,8 @@ log = logging.getLogger(__name__)
 @dataclass
 class ResultadoRodada:
     rodada: int
-    mae_predicao: float                  # erro médio de predição (pontos)
     pts_modelo: float                    # pontos reais do time escolhido pelo modelo
-    pts_baseline_media: float            # pontos do time escolhido pela média histórica simples
+    pts_media_geral: float         # media de pontos de todos os times do cartola
     pts_teto: float                      # pontos do melhor time possível (oracle, a posteriori)
     eficiencia: float                    # pts_modelo / pts_teto  (0–1)
     budget_usado: float                  # cartoletas gastas
@@ -107,47 +104,6 @@ def calcular_teto(df_rodada_real: pd.DataFrame, budget: float, formation: dict) 
     return pts
 
 
-def calcular_baseline_media(df_mercado: pd.DataFrame, budget: float, formation: dict) -> float:
-    """
-    Time montado apenas com `media_num` (média histórica do Cartola) — sem ML.
-    Serve como baseline simples para comparação.
-    """
-    import pulp
-
-    df = df_mercado.copy().reset_index(drop=True)
-    n = len(df)
-
-    prob = pulp.LpProblem("baseline", pulp.LpMaximize)
-    x = pulp.LpVariable.dicts("x", range(n), cat="Binary")
-    cap = pulp.LpVariable.dicts("cap", range(n), cat="Binary")
-
-    prob += pulp.lpSum(
-        df.loc[i, "media"] * x[i] + 0.5 * df.loc[i, "media"] * cap[i]
-        for i in range(n)
-    )
-    prob += pulp.lpSum(df.loc[i, "preco"] * x[i] for i in range(n)) <= budget
-
-    for pos_id, qtd in formation.items():
-        idx = [i for i in range(n) if df.loc[i, "posicao_id"] == pos_id]
-        prob += pulp.lpSum(x[i] for i in idx) == qtd
-
-    prob += pulp.lpSum(cap[i] for i in range(n)) == 1
-    for i in range(n):
-        prob += cap[i] <= x[i]
-
-    for clube_id in df["clube_id"].unique():
-        idx = df[df["clube_id"] == clube_id].index.tolist()
-        prob += pulp.lpSum(x[i] for i in idx) <= 5
-
-    pulp.PULP_CBC_CMD(msg=False).solve(prob)
-    escalados = [i for i in range(n) if pulp.value(x[i]) == 1]
-    cap_idx = [i for i in range(n) if pulp.value(cap[i]) == 1]
-
-    pts = sum(df.loc[i, "media"] for i in escalados)
-    pts += 0.5 * df.loc[cap_idx[0], "media"] if cap_idx else 0
-    return pts
-
-
 # ──────────────────────────────────────────────
 # ENGINE DE BACKTESTING
 # ──────────────────────────────────────────────
@@ -161,6 +117,7 @@ def rodar_backtest(
     formation: dict = FORMATION,
     min_rodadas_treino: int = 5,
     df_mercado_atual: pd.DataFrame = None,
+    df_media_cartoleiros: pd.DataFrame = None
 ) -> list[ResultadoRodada]:
     """
     Para cada rodada no intervalo [rodada_inicio, rodada_fim]:
@@ -293,17 +250,15 @@ def rodar_backtest(
 
         # Teto (oracle)
         pts_teto = calcular_teto(df_rodada_real, budget, formation)
-
-        # Baseline (média histórica simples)
-        pts_baseline = calcular_baseline_media(df_mercado_sim, budget, formation)
+        
+        pts_media_geral = df_media_cartoleiros.loc[df_media_cartoleiros["rodada"] == rodada_alvo, "media_cartoleiros"].iloc[0]
 
         eficiencia = pts_modelo / pts_teto if pts_teto > 0 else 0
 
         resultado = ResultadoRodada(
-            rodada=rodada_alvo,
-            mae_predicao=mae,
+            rodada=rodada_alvo,            
             pts_modelo=pts_modelo,
-            pts_baseline_media=pts_baseline,
+            pts_media_geral=pts_media_geral,
             pts_teto=pts_teto,
             eficiencia=eficiencia,
             budget_usado=time_modelo["preco"].sum(),
@@ -313,8 +268,8 @@ def rodar_backtest(
         )
         resultados.append(resultado)
         log.info(
-            f"  Modelo: {pts_modelo:.1f} | Baseline: {pts_baseline:.1f} | "
-            f"Teto: {pts_teto:.1f} | Eficiência: {eficiencia:.1%} | MAE: {mae:.2f}"
+            f"  Modelo: {pts_modelo:.1f} | Media Geral: {pts_media_geral:.1f} | "
+            f"Teto: {pts_teto:.1f} | Eficiência: {eficiencia:.1%}"
         )
 
     return resultados
@@ -328,16 +283,15 @@ def gerar_relatorio(resultados: list[ResultadoRodada], output_dir: Path = DATA_D
     """Gera DataFrame resumo + gráficos do backtesting."""
 
     df = pd.DataFrame([{
-        "rodada":            r.rodada,
-        "mae_predicao":      r.mae_predicao,
-        "pts_modelo":        r.pts_modelo,
-        "pts_baseline":      r.pts_baseline_media,
-        "pts_teto":          r.pts_teto,
-        "eficiencia":        r.eficiencia,
-        "budget_usado":      r.budget_usado,
-        "ganhou_baseline":   r.pts_modelo > r.pts_baseline_media,
-        "capitao":           r.capitao,
-        "capitao_pts_reais": r.capitao_pts_reais,
+        "rodada":             r.rodada,        
+        "pts_modelo":         r.pts_modelo,
+        "pts_media_geral":    r.pts_media_geral,
+        "pts_teto":           r.pts_teto,
+        "eficiencia":         r.eficiencia,
+        "budget_usado":       r.budget_usado,
+        "ganhou_media_geral": r.pts_modelo > r.pts_media_geral,
+        "capitao":            r.capitao,
+        "capitao_pts_reais":  r.capitao_pts_reais,
     } for r in resultados])
 
     # ── Sumário no terminal ──
@@ -346,12 +300,11 @@ def gerar_relatorio(resultados: list[ResultadoRodada], output_dir: Path = DATA_D
     print("="*70)
     print(f"  Rodadas testadas:        {len(df)}")
     print(f"  Pts modelo  (média):     {df['pts_modelo'].mean():.2f}  ±{df['pts_modelo'].std():.2f}")
-    print(f"  Pts baseline (média):    {df['pts_baseline'].mean():.2f}  ±{df['pts_baseline'].std():.2f}")
+    print(f"  Pts media geral:         {df['pts_media_geral'].mean():.2f}  ±{df['pts_media_geral'].std():.2f}")
     print(f"  Pts teto    (média):     {df['pts_teto'].mean():.2f}")
     print(f"  Eficiência  (média):     {df['eficiencia'].mean():.1%}")
-    print(f"  Bateu baseline:          {df['ganhou_baseline'].sum()}/{len(df)} rodadas "
-          f"({df['ganhou_baseline'].mean():.0%})")
-    print(f"  MAE médio:               {df['mae_predicao'].mean():.3f} pts")
+    print(f"  Bateu media geral:       {df['ganhou_media_geral'].sum()}/{len(df)} rodadas "
+          f"({df['ganhou_media_geral'].mean():.0%})")    
     print(f"  Melhor rodada:           R{df.loc[df['pts_modelo'].idxmax(), 'rodada']} "
           f"({df['pts_modelo'].max():.1f} pts)")
     print(f"  Pior rodada:             R{df.loc[df['pts_modelo'].idxmin(), 'rodada']} "
@@ -369,13 +322,13 @@ def gerar_relatorio(resultados: list[ResultadoRodada], output_dir: Path = DATA_D
     ax1 = fig.add_subplot(gs[0, :2])
     ax1.plot(rodadas, df["pts_teto"],     "--", color="gold",   label="Teto (oracle)", alpha=0.7)
     ax1.plot(rodadas, df["pts_modelo"],   "-o", color="#2196F3", label="Modelo ML",    linewidth=2)
-    ax1.plot(rodadas, df["pts_baseline"], "-s", color="#FF7043", label="Baseline (média)", linewidth=1.5, alpha=0.8)
-    ax1.fill_between(rodadas, df["pts_baseline"], df["pts_modelo"],
-                     where=df["pts_modelo"] >= df["pts_baseline"],
-                     alpha=0.15, color="#2196F3", label="Ganhou baseline")
-    ax1.fill_between(rodadas, df["pts_baseline"], df["pts_modelo"],
-                     where=df["pts_modelo"] < df["pts_baseline"],
-                     alpha=0.15, color="#FF7043", label="Perdeu baseline")
+    ax1.plot(rodadas, df["pts_media_geral"], "-s", color="#FF7043", label="Media geral", linewidth=1.5, alpha=0.8)
+    ax1.fill_between(rodadas, df["pts_media_geral"], df["pts_modelo"],
+                     where=df["pts_modelo"] >= df["pts_media_geral"],
+                     alpha=0.15, color="#2196F3", label="Ganhou media geral")
+    ax1.fill_between(rodadas, df["pts_media_geral"], df["pts_modelo"],
+                     where=df["pts_modelo"] < df["pts_media_geral"],
+                     alpha=0.15, color="#FF7043", label="Perdeu media geral")
     ax1.set_title("Pontuação Real por Rodada")
     ax1.set_xlabel("Rodada")
     ax1.set_ylabel("Pontos")
@@ -395,7 +348,7 @@ def gerar_relatorio(resultados: list[ResultadoRodada], output_dir: Path = DATA_D
     ax2.grid(True, alpha=0.3, axis="y")
 
     # 3. Ganho acumulado sobre o baseline
-    ganho_acumulado = (df["pts_modelo"] - df["pts_baseline"]).cumsum()
+    ganho_acumulado = (df["pts_modelo"] - df["pts_media_geral"]).cumsum()
     ax3 = fig.add_subplot(gs[1, :2])
     ax3.plot(rodadas, ganho_acumulado, "-o", color="#4CAF50", linewidth=2)
     ax3.axhline(0, color="black", linewidth=0.8, linestyle="--")
@@ -403,21 +356,10 @@ def gerar_relatorio(resultados: list[ResultadoRodada], output_dir: Path = DATA_D
                      where=ganho_acumulado >= 0, alpha=0.2, color="#4CAF50")
     ax3.fill_between(rodadas, 0, ganho_acumulado,
                      where=ganho_acumulado < 0, alpha=0.2, color="#F44336")
-    ax3.set_title("Ganho Acumulado vs. Baseline (pontos)")
+    ax3.set_title("Ganho Acumulado vs. Media geral (pontos)")
     ax3.set_xlabel("Rodada")
     ax3.set_ylabel("Δ pontos acumulados")
-    ax3.grid(True, alpha=0.3)
-
-    # 4. MAE por rodada
-    ax4 = fig.add_subplot(gs[1, 2])
-    ax4.plot(rodadas, df["mae_predicao"], "-o", color="#9C27B0", linewidth=2)
-    ax4.axhline(df["mae_predicao"].mean(), color="black", linestyle="--",
-                linewidth=1, label=f"Média {df['mae_predicao'].mean():.2f}")
-    ax4.set_title("MAE de Predição por Rodada")
-    ax4.set_xlabel("Rodada")
-    ax4.set_ylabel("MAE (pontos)")
-    ax4.legend(fontsize=8)
-    ax4.grid(True, alpha=0.3)
+    ax3.grid(True, alpha=0.3)    
 
     plt.savefig(output_dir / "backtest" / "backtest_report.png", dpi=150, bbox_inches="tight")
     log.info(f"Gráfico salvo em {output_dir / "backtest" / 'backtest_report.png'}")
@@ -482,6 +424,10 @@ def main():
     df_mercado_atual = pd.read_parquet(mercado_file)
     log.info(f"Mercado atual carregado: {len(df_mercado_atual)} atletas")
 
+    media_cartoleiros_file = DATA_DIR / "medias_cartoleiros.parquet"
+    df_media_cartoleiros = pd.read_parquet(media_cartoleiros_file)
+    log.info(f"Medias dos cartoleiros carregadas: {len(df_media_cartoleiros)} medias")
+
     # Rodar backtest
     resultados = rodar_backtest(
         df_hist=df_hist,
@@ -490,6 +436,7 @@ def main():
         rodada_fim=args.fim,
         budget=args.budget,
         df_mercado_atual=df_mercado_atual,
+        df_media_cartoleiros=df_media_cartoleiros
     )
 
     if not resultados:

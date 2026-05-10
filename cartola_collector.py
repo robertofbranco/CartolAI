@@ -129,6 +129,10 @@ class CartolaAPI:
     def partidas(self, rodada: int = None):
         path = f"/partidas/{rodada}" if rodada else "/partidas"
         return self._get(path, use_cache=rodada is not None)
+    
+    def pos_rodada(self, rodada: int):
+        path = f"/pos-rodada/destaques/{rodada}"
+        return self._get(path, use_cache=rodada)
 
 
 class GatoMestreAPI:
@@ -359,6 +363,16 @@ def preparar_partidas(api: CartolaAPI, rodadas_alvo: list[int]) -> pd.DataFrame:
     return pd.DataFrame(registros) if registros else pd.DataFrame()
 
 
+def coletar_media_cartoleiros(api: CartolaAPI, rodadas_alvo: list[int]) -> pd.DataFrame:
+    medias_cartoleiros = []
+    for rodada in rodadas_alvo:
+        data = api.pos_rodada(rodada)
+        media = data.get("media_pontos")
+        medias_cartoleiros.append({"rodada": rodada, "media_cartoleiros": media})
+
+    return  pd.DataFrame(medias_cartoleiros) if medias_cartoleiros else pd.DataFrame()
+
+
 # ──────────────────────────────────────────────
 # EXECUÇÃO
 # ──────────────────────────────────────────────
@@ -436,6 +450,13 @@ def main():
             log.info(f"Odds salvas: {df_odds['rodada'].nunique()} rodadas → {odds_file}")
     else:
         log.info("GATOMESTRE_TOKEN não definido — odds não coletadas.")
+
+    # ── Media Cartoleiros ──
+    df_medias_cartoleiros = coletar_media_cartoleiros(api, rodadas_alvo)
+    if not df_medias_cartoleiros.empty:
+        medias_cartoleiros_file = DATA_DIR / "medias_cartoleiros.parquet"
+        df_medias_cartoleiros.to_parquet(medias_cartoleiros_file, index=False)
+        log.info(f"Medias dos cartoleiros salvas: {df_medias_cartoleiros['rodada'].nunique()} rodadas → {medias_cartoleiros_file}")
 
 
 if __name__ == "__main__":
