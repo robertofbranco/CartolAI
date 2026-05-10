@@ -45,7 +45,7 @@ When changing shared behavior, edit the lowest stage that owns it and let the up
 
 ### Lineup ILP shape
 
-The objective is `Σ pred_i · x_i + (capitao_bonus - 1) · pred_i · cap_i`, with `cap_i ≤ x_i` and exactly one captain. Players with `status_id` in `{5, 7}` (suspended/injured) are filtered before optimization. Position counts come from `FORMATION` keyed by `posicao_id` (1=GOL, 2=LAT, 3=ZAG, 4=MEI, 5=ATA, 6=TEC); changing the formation dict is the supported way to change the lineup shape.
+The objective is `Σ pred_i · x_i + (capitao_bonus - 1) · pred_i · cap_i`, with `cap_i ≤ x_i` and exactly one captain. Only players with `status_id == 7` (Provável — escalado para a próxima rodada) are kept before optimization; `2`=Dúvida, `3`=Suspenso, `5`=Contundido, `6`=Nulo are filtered out. The canonical mapping comes from `https://api.cartola.globo.com/atletas/status`. Note that `status_id` in `historico.parquet` is the *post-game* state (e.g., every TEC ends a round as 7, injured players become 5), so it can't be used to reconstruct pre-round availability — `cartola_backtest.py` forces `status_id = 7` on every row of `df_rodada_real` since each row came from `/atletas/pontuados/{rodada}` (the player was on the field, therefore Provável at decision time). Position counts come from `FORMATION` keyed by `posicao_id` (1=GOL, 2=LAT, 3=ZAG, 4=MEI, 5=ATA, 6=TEC); changing the formation dict is the supported way to change the lineup shape.
 
 ### Live-prediction enrichment pattern
 
