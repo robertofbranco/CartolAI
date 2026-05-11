@@ -183,7 +183,7 @@ def otimizar_escalacao(
     formation: dict = FORMATION,
     capitao_bonus: float = 1.5,
     max_por_clube: int = 5,
-    alpha_pred: float = 0.3,
+    alpha_pred: float = 0.7,
     capitao_posicoes: tuple = (4, 5),
 ) -> pd.DataFrame:
     """
