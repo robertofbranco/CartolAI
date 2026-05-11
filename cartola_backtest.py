@@ -49,6 +49,10 @@ class ResultadoRodada:
     rodada: int
     pts_modelo: float                    # pontos reais do time escolhido pelo modelo
     pts_media_geral: float         # media de pontos de todos os times do cartola
+    pts_chave_media: float               # media dos pontos dos vencedores de chave (NaN se sem dados)
+    pts_chave_max: float                 # melhor vencedor de chave na rodada
+    n_chaves: int                        # qtd de chaves com dado na rodada
+    n_chaves_vencidas: int               # qtd de chaves onde o modelo bateu o vencedor
     pts_teto: float                      # pontos do melhor time possível (oracle, a posteriori)
     eficiencia: float                    # pts_modelo / pts_teto  (0–1)
     budget_usado: float                  # cartoletas gastas
@@ -119,6 +123,7 @@ def rodar_backtest(
     df_mercado_atual: pd.DataFrame = None,
     df_media_cartoleiros: pd.DataFrame = None,
     df_odds: pd.DataFrame = None,
+    df_chaves: pd.DataFrame = None,
 ) -> list[ResultadoRodada]:
     """
     Para cada rodada no intervalo [rodada_inicio, rodada_fim]:
@@ -181,22 +186,33 @@ def rodar_backtest(
             log.warning(f"Rodada {rodada_alvo}: sem dados reais, pulando.")
             continue
 
-        # /atletas/pontuados não retorna preco/media — vêm de mercado_atual.
+        # /atletas/pontuados não retorna preco — vem de mercado_atual.
         # Usamos o snapshot atual como proxy (preços não variam drasticamente intra-temporada).
+        # `media` NÃO pode vir do snapshot: ela é a média de pontos da temporada inteira,
+        # o que vaza pontuações de rodadas posteriores à rodada_alvo. Recalculamos abaixo
+        # usando apenas o histórico anterior à rodada_alvo.
         # Importante: NÃO importar status_id daqui — ele reflete "agora", não a rodada
         # alvo (entre rodadas, todos os técnicos ficam com status_id=7 e quebram o ILP).
         if df_mercado_atual is not None and not df_mercado_atual.empty:
             df_rodada_real = df_rodada_real.drop(
                 columns=["preco", "media"], errors="ignore"
             ).merge(
-                df_mercado_atual[["atleta_id", "preco", "media"]],
+                df_mercado_atual[["atleta_id", "preco"]],
                 on="atleta_id", how="left",
             )
             df_rodada_real = df_rodada_real[df_rodada_real["preco"].notna()].reset_index(drop=True)
-            df_rodada_real["media"] = df_rodada_real["media"].fillna(0.0)
             if df_rodada_real.empty:
                 log.warning(f"Rodada {rodada_alvo}: nenhum atleta cruzou com mercado_atual, pulando.")
                 continue
+
+        # Media histórica do jogador até a rodada anterior (sem ver o futuro).
+        # Equivalente à coluna `media` que estaria no mercado_atual no dia da rodada_alvo.
+        media_ate_rodada = (
+            df_treino_base.groupby("atleta_id")["pontos"].mean()
+        )
+        df_rodada_real["media"] = (
+            df_rodada_real["atleta_id"].map(media_ate_rodada).fillna(0.0)
+        )
 
         # Enriquecer com features da rodada anterior (o que o modelo veria ao vivo)
         odds_cols = ["prob_win", "prob_draw", "prob_loss"]
@@ -272,10 +288,27 @@ def rodar_backtest(
 
         eficiencia = pts_modelo / pts_teto if pts_teto > 0 else 0
 
+        # Comparação contra vencedores de chave (playoffs das ligas)
+        pts_chave_media = float("nan")
+        pts_chave_max = float("nan")
+        n_chaves = 0
+        n_chaves_vencidas = 0
+        if df_chaves is not None and not df_chaves.empty:
+            chaves_r = df_chaves.loc[df_chaves["rodada"] == rodada_alvo, "pontos"]
+            if not chaves_r.empty:
+                pts_chave_media = float(chaves_r.mean())
+                pts_chave_max = float(chaves_r.max())
+                n_chaves = int(len(chaves_r))
+                n_chaves_vencidas = int((pts_modelo > chaves_r).sum())
+
         resultado = ResultadoRodada(
-            rodada=rodada_alvo,            
+            rodada=rodada_alvo,
             pts_modelo=pts_modelo,
             pts_media_geral=pts_media_geral,
+            pts_chave_media=pts_chave_media,
+            pts_chave_max=pts_chave_max,
+            n_chaves=n_chaves,
+            n_chaves_vencidas=n_chaves_vencidas,
             pts_teto=pts_teto,
             eficiencia=eficiencia,
             budget_usado=time_modelo["preco"].sum(),
@@ -284,9 +317,14 @@ def rodar_backtest(
             time_escalado=time_modelo,
         )
         resultados.append(resultado)
+        chave_str = (
+            f" | Chaves: {pts_chave_media:.1f} média / {pts_chave_max:.1f} máx "
+            f"({n_chaves_vencidas}/{n_chaves} vencidas)"
+            if n_chaves > 0 else ""
+        )
         log.info(
             f"  Modelo: {pts_modelo:.1f} | Media Geral: {pts_media_geral:.1f} | "
-            f"Teto: {pts_teto:.1f} | Eficiência: {eficiencia:.1%}"
+            f"Teto: {pts_teto:.1f} | Eficiência: {eficiencia:.1%}{chave_str}"
         )
 
     return resultados
@@ -300,16 +338,25 @@ def gerar_relatorio(resultados: list[ResultadoRodada], output_dir: Path = DATA_D
     """Gera DataFrame resumo + gráficos do backtesting."""
 
     df = pd.DataFrame([{
-        "rodada":             r.rodada,        
+        "rodada":             r.rodada,
         "pts_modelo":         r.pts_modelo,
         "pts_media_geral":    r.pts_media_geral,
+        "pts_chave_media":    r.pts_chave_media,
+        "pts_chave_max":      r.pts_chave_max,
+        "n_chaves":           r.n_chaves,
+        "n_chaves_vencidas":  r.n_chaves_vencidas,
         "pts_teto":           r.pts_teto,
         "eficiencia":         r.eficiencia,
         "budget_usado":       r.budget_usado,
         "ganhou_media_geral": r.pts_modelo > r.pts_media_geral,
+        "ganhou_chave_media": r.pts_modelo > r.pts_chave_media if r.n_chaves > 0 else pd.NA,
         "capitao":            r.capitao,
         "capitao_pts_reais":  r.capitao_pts_reais,
     } for r in resultados])
+
+    df_chaves_eval = df[df["n_chaves"] > 0]
+    total_chaves = int(df["n_chaves"].sum())
+    total_chaves_vencidas = int(df["n_chaves_vencidas"].sum())
 
     # ── Sumário no terminal ──
     print("\n" + "="*70)
@@ -318,10 +365,20 @@ def gerar_relatorio(resultados: list[ResultadoRodada], output_dir: Path = DATA_D
     print(f"  Rodadas testadas:        {len(df)}")
     print(f"  Pts modelo  (média):     {df['pts_modelo'].mean():.2f}  ±{df['pts_modelo'].std():.2f}")
     print(f"  Pts media geral:         {df['pts_media_geral'].mean():.2f}  ±{df['pts_media_geral'].std():.2f}")
+    if not df_chaves_eval.empty:
+        print(f"  Pts vencedor chave:      {df_chaves_eval['pts_chave_media'].mean():.2f}  "
+              f"(máx {df_chaves_eval['pts_chave_max'].mean():.2f})")
     print(f"  Pts teto    (média):     {df['pts_teto'].mean():.2f}")
     print(f"  Eficiência  (média):     {df['eficiencia'].mean():.1%}")
     print(f"  Bateu media geral:       {df['ganhou_media_geral'].sum()}/{len(df)} rodadas "
-          f"({df['ganhou_media_geral'].mean():.0%})")    
+          f"({df['ganhou_media_geral'].mean():.0%})")
+    if not df_chaves_eval.empty:
+        ganhou_chave_media = (df_chaves_eval["pts_modelo"] > df_chaves_eval["pts_chave_media"]).sum()
+        print(f"  Bateu média da chave:    {ganhou_chave_media}/{len(df_chaves_eval)} rodadas "
+              f"({ganhou_chave_media / len(df_chaves_eval):.0%})")
+        if total_chaves:
+            print(f"  Chaves vencidas (total): {total_chaves_vencidas}/{total_chaves} "
+                  f"({total_chaves_vencidas / total_chaves:.0%})")
     print(f"  Melhor rodada:           R{df.loc[df['pts_modelo'].idxmax(), 'rodada']} "
           f"({df['pts_modelo'].max():.1f} pts)")
     print(f"  Pior rodada:             R{df.loc[df['pts_modelo'].idxmin(), 'rodada']} "
@@ -335,11 +392,16 @@ def gerar_relatorio(resultados: list[ResultadoRodada], output_dir: Path = DATA_D
 
     rodadas = df["rodada"].values
 
-    # 1. Pontuação por rodada
-    ax1 = fig.add_subplot(gs[0, :2])
+    # 1. Pontuação por rodada (linha inteira)
+    ax1 = fig.add_subplot(gs[0, :])
     ax1.plot(rodadas, df["pts_teto"],     "--", color="gold",   label="Teto (oracle)", alpha=0.7)
     ax1.plot(rodadas, df["pts_modelo"],   "-o", color="#2196F3", label="Modelo ML",    linewidth=2)
     ax1.plot(rodadas, df["pts_media_geral"], "-s", color="#FF7043", label="Media geral", linewidth=1.5, alpha=0.8)
+    if df["n_chaves"].sum() > 0:
+        ax1.plot(rodadas, df["pts_chave_media"], "-^", color="#7B1FA2",
+                 label="Vencedor de chave (média)", linewidth=1.5, alpha=0.8)
+        ax1.plot(rodadas, df["pts_chave_max"], "-v", color="#4A148C",
+                 label="Vencedor de chave (máx)", linewidth=1.5, alpha=0.8, linestyle=":")
     ax1.fill_between(rodadas, df["pts_media_geral"], df["pts_modelo"],
                      where=df["pts_modelo"] >= df["pts_media_geral"],
                      alpha=0.15, color="#2196F3", label="Ganhou media geral")
@@ -352,19 +414,7 @@ def gerar_relatorio(resultados: list[ResultadoRodada], output_dir: Path = DATA_D
     ax1.legend(fontsize=8)
     ax1.grid(True, alpha=0.3)
 
-    # 2. Eficiência (%)
-    ax2 = fig.add_subplot(gs[0, 2])
-    colors = ["#2196F3" if e >= 0.7 else "#FF7043" for e in df["eficiencia"]]
-    ax2.bar(rodadas, df["eficiencia"] * 100, color=colors, alpha=0.8)
-    ax2.axhline(df["eficiencia"].mean() * 100, color="black", linestyle="--",
-                linewidth=1, label=f"Média {df['eficiencia'].mean():.0%}")
-    ax2.set_title("Eficiência vs. Teto")
-    ax2.set_xlabel("Rodada")
-    ax2.set_ylabel("% do teto alcançado")
-    ax2.legend(fontsize=8)
-    ax2.grid(True, alpha=0.3, axis="y")
-
-    # 3. Ganho acumulado sobre o baseline
+    # 2. Ganho acumulado sobre o baseline
     ganho_acumulado = (df["pts_modelo"] - df["pts_media_geral"]).cumsum()
     ax3 = fig.add_subplot(gs[1, :2])
     ax3.plot(rodadas, ganho_acumulado, "-o", color="#4CAF50", linewidth=2)
@@ -376,7 +426,19 @@ def gerar_relatorio(resultados: list[ResultadoRodada], output_dir: Path = DATA_D
     ax3.set_title("Ganho Acumulado vs. Media geral (pontos)")
     ax3.set_xlabel("Rodada")
     ax3.set_ylabel("Δ pontos acumulados")
-    ax3.grid(True, alpha=0.3)    
+    ax3.grid(True, alpha=0.3)
+
+    # 3. Eficiência (%)
+    ax2 = fig.add_subplot(gs[1, 2])
+    colors = ["#2196F3" if e >= 0.7 else "#FF7043" for e in df["eficiencia"]]
+    ax2.bar(rodadas, df["eficiencia"] * 100, color=colors, alpha=0.8)
+    ax2.axhline(df["eficiencia"].mean() * 100, color="black", linestyle="--",
+                linewidth=1, label=f"Média {df['eficiencia'].mean():.0%}")
+    ax2.set_title("Eficiência vs. Teto")
+    ax2.set_xlabel("Rodada")
+    ax2.set_ylabel("% do teto alcançado")
+    ax2.legend(fontsize=8)
+    ax2.grid(True, alpha=0.3, axis="y")
 
     plt.savefig(output_dir / "backtest" / "backtest_report.png", dpi=150, bbox_inches="tight")
     log.info(f"Gráfico salvo em {output_dir / "backtest" / 'backtest_report.png'}")
@@ -410,9 +472,9 @@ def gerar_relatorio(resultados: list[ResultadoRodada], output_dir: Path = DATA_D
 
 def main():
     parser = argparse.ArgumentParser(description="Cartola FC — Backtesting Engine")
-    parser.add_argument("--inicio",  type=int, default=8,    help="Primeira rodada a testar (mín. 6)")
+    parser.add_argument("--inicio",  type=int, default=6,    help="Primeira rodada a testar (mín. 6)")
     parser.add_argument("--fim",     type=int, default=14,   help="Última rodada a testar")
-    parser.add_argument("--budget",  type=float, default=150.0)
+    parser.add_argument("--budget",  type=float, default=140.0)
     args = parser.parse_args()
 
     # Carregar histórico salvo pelo pipeline principal
@@ -450,6 +512,15 @@ def main():
     if not df_odds.empty:
         log.info(f"Odds carregadas: {df_odds['rodada'].nunique()} rodadas")
 
+    chaves_file = DATA_DIR / "chaves_ligas.parquet"
+    df_chaves = pd.read_parquet(chaves_file) if chaves_file.exists() else pd.DataFrame()
+    if not df_chaves.empty:
+        df_chaves["rodada"] = pd.to_numeric(df_chaves["rodada"], errors="coerce").astype("Int64")
+        df_chaves = df_chaves.dropna(subset=["rodada", "pontos"])
+        df_chaves["rodada"] = df_chaves["rodada"].astype(int)
+        log.info(f"Chaves carregadas: {len(df_chaves)} vencedores em "
+                 f"{df_chaves['rodada'].nunique()} rodadas")
+
     # Rodar backtest
     resultados = rodar_backtest(
         df_hist=df_hist,
@@ -460,6 +531,7 @@ def main():
         df_mercado_atual=df_mercado_atual,
         df_media_cartoleiros=df_media_cartoleiros,
         df_odds=df_odds,
+        df_chaves=df_chaves,
     )
 
     if not resultados:
