@@ -43,10 +43,19 @@ log = logging.getLogger(__name__)
 # 1. ENGENHARIA DE FEATURES
 # ──────────────────────────────────────────────
 
-def construir_features(df: pd.DataFrame, partidas_df: pd.DataFrame = None) -> pd.DataFrame:
+def construir_features(
+    df: pd.DataFrame,
+    partidas_df: pd.DataFrame = None,
+    odds_df: pd.DataFrame = None,
+) -> pd.DataFrame:
     """
     Gera features temporais e contextuais para cada (atleta, rodada).
     Usa apenas dados do PASSADO (sem data leakage).
+
+    `odds_df` (opcional): DataFrame com colunas
+    [rodada, clube_id, prob_win, prob_draw, prob_loss] do Gato Mestre.
+    Odds são publicadas ANTES da partida, então alinhar (rodada, clube_id) com
+    a linha de pontuação não vaza informação.
     """
     scout_cols = [c for c in df.columns if c.startswith("scout_")]
     df[scout_cols] = df[scout_cols].fillna(0)
@@ -90,6 +99,18 @@ def construir_features(df: pd.DataFrame, partidas_df: pd.DataFrame = None) -> pd
     else:
         df["mando"] = 0
 
+    odds_cols = ["prob_win", "prob_draw", "prob_loss"]
+    if odds_df is not None and not odds_df.empty:
+        df = df.merge(
+            odds_df[["rodada", "clube_id"] + odds_cols],
+            on=["rodada", "clube_id"],
+            how="left",
+        )
+        for col, default in zip(odds_cols, [0.33, 0.34, 0.33]):
+            df[col] = df[col].fillna(default)
+    else:
+        df["prob_win"], df["prob_draw"], df["prob_loss"] = 0.33, 0.34, 0.33
+
     df["posicao_enc"] = df["posicao_id"].astype(int)
     df["clube_enc"] = LabelEncoder().fit_transform(df["clube_id"].astype(str))
 
@@ -108,13 +129,14 @@ FEATURE_COLS = [
     "regularidade_5r", "mando",
     "acc_scout_G", "acc_scout_A", "acc_scout_SG",
     "acc_scout_GS", "acc_scout_DD",
+    "prob_win", "prob_draw", "prob_loss",
 ]
 
 
 def treinar_modelo(df: pd.DataFrame, rodada_corte: int):
     """
     Treina LightGBM com validação temporal (sem data leakage).
-    Retorna (modelo, feature_cols, mae).
+    Retorna (modelo, feature_cols).
     """
     feat_cols = [c for c in FEATURE_COLS if c in df.columns]
     df_model = df[df["pontos"].notna()].copy()
@@ -146,9 +168,7 @@ def treinar_modelo(df: pd.DataFrame, rodada_corte: int):
         callbacks=[lgb.early_stopping(50, verbose=False)],
     )
 
-    mae = mean_absolute_error(y_val, model.predict(X_val))
-    log.info(f"Validação MAE: {mae:.3f} pts | Features: {len(feat_cols)}")
-    return model, feat_cols, mae
+    return model, feat_cols
 
 
 # ──────────────────────────────────────────────
@@ -173,8 +193,7 @@ def otimizar_escalacao(
         score = alpha * model_pred + (1 - alpha) * media_num
     Set 1.0 to trust the model fully, 0.0 to fall back to media_num only.
 
-    `capitao_posicoes` restricts who can wear the C — defaults to MEI/ATA, since
-    the captain bonus is wasted on positions with low ceiling (TEC, GOL, ZAG).
+    `capitao_posicoes` restricts who can wear the C — defaults to MEI/ATA
     """
     df = df_mercado.copy()
     raw_pred = model.predict(df[[c for c in feat_cols if c in df.columns]].fillna(0))
@@ -277,6 +296,9 @@ def run_pipeline(
     partidas_file = DATA_DIR / "partidas.parquet"
     df_partidas = pd.read_parquet(partidas_file) if partidas_file.exists() else pd.DataFrame()
 
+    odds_file = DATA_DIR / "odds.parquet"
+    df_odds = pd.read_parquet(odds_file) if odds_file.exists() else pd.DataFrame()
+
     # Detectar rodada alvo via API ou último dado disponível
     if rodada_alvo is None:
         api = CartolaAPI(token=token)
@@ -289,10 +311,10 @@ def run_pipeline(
     log.info(f"Rodada alvo: {rodada_alvo}")
 
     log.info("Construindo features...")
-    df_feat = construir_features(df_hist, df_partidas)
+    df_feat = construir_features(df_hist, df_partidas, df_odds)
 
     log.info(f"Treinando modelo para rodada {rodada_alvo}...")
-    model, feat_cols, mae = treinar_modelo(df_feat, rodada_corte=rodada_alvo)
+    model, feat_cols = treinar_modelo(df_feat, rodada_corte=rodada_alvo)
 
     # Buscar mercado ao vivo
     api = CartolaAPI(token=token)
@@ -303,12 +325,24 @@ def run_pipeline(
     df_mercado["clube_nome"] = df_mercado["clube_id"].map(clubes_map).fillna("")
     df_mercado["rodada"]     = rodada_alvo
 
+    odds_cols = ["prob_win", "prob_draw", "prob_loss"]
+    feat_cols_no_odds = [c for c in feat_cols if c not in odds_cols]
     ultima_feat = (
         df_feat[df_feat["rodada"] == df_feat["rodada"].max()]
-        [["atleta_id"] + [c for c in feat_cols if c not in df_mercado.columns]]
+        [["atleta_id"] + [c for c in feat_cols_no_odds if c not in df_mercado.columns]]
         .drop_duplicates("atleta_id")
     )
     df_mercado = df_mercado.merge(ultima_feat, on="atleta_id", how="left")
+
+    if not df_odds.empty:
+        odds_alvo = df_odds[df_odds["rodada"] == rodada_alvo][["clube_id"] + odds_cols]
+        df_mercado = df_mercado.merge(odds_alvo, on="clube_id", how="left")
+    for col, default in zip(odds_cols, [0.33, 0.34, 0.33]):
+        if col not in df_mercado.columns:
+            df_mercado[col] = default
+        else:
+            df_mercado[col] = df_mercado[col].fillna(default)
+
     for col in feat_cols:
         if col in df_mercado.columns:
             df_mercado[col] = df_mercado[col].fillna(

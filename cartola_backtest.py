@@ -117,7 +117,8 @@ def rodar_backtest(
     formation: dict = FORMATION,
     min_rodadas_treino: int = 5,
     df_mercado_atual: pd.DataFrame = None,
-    df_media_cartoleiros: pd.DataFrame = None
+    df_media_cartoleiros: pd.DataFrame = None,
+    df_odds: pd.DataFrame = None,
 ) -> list[ResultadoRodada]:
     """
     Para cada rodada no intervalo [rodada_inicio, rodada_fim]:
@@ -159,11 +160,16 @@ def rodar_backtest(
 
         # Features com dados até a rodada anterior
         partidas_hist = df_partidas[df_partidas["rodada"] < rodada_alvo] if not df_partidas.empty else pd.DataFrame()
-        df_feat = construir_features(df_treino_base, partidas_hist)
+        odds_hist = (
+            df_odds[df_odds["rodada"] < rodada_alvo]
+            if df_odds is not None and not df_odds.empty
+            else pd.DataFrame()
+        )
+        df_feat = construir_features(df_treino_base, partidas_hist, odds_hist)
 
         # Treinar modelo
         try:
-            model, feat_cols, mae = treinar_modelo(df_feat, rodada_corte=rodada_alvo)
+            model, feat_cols = treinar_modelo(df_feat, rodada_corte=rodada_alvo)
         except ValueError as e:
             log.warning(f"Rodada {rodada_alvo}: {e}")
             continue
@@ -193,12 +199,23 @@ def rodar_backtest(
                 continue
 
         # Enriquecer com features da rodada anterior (o que o modelo veria ao vivo)
+        odds_cols = ["prob_win", "prob_draw", "prob_loss"]
+        feat_cols_no_odds = [c for c in feat_cols if c not in odds_cols]
         ultima_feat = (
             df_feat[df_feat["rodada"] == df_feat["rodada"].max()]
-            [["atleta_id"] + [c for c in feat_cols if c not in df_rodada_real.columns]]
+            [["atleta_id"] + [c for c in feat_cols_no_odds if c not in df_rodada_real.columns]]
             .drop_duplicates("atleta_id")
         )
         df_mercado_sim = df_rodada_real.merge(ultima_feat, on="atleta_id", how="left")
+
+        if df_odds is not None and not df_odds.empty:
+            odds_alvo = df_odds[df_odds["rodada"] == rodada_alvo][["clube_id"] + odds_cols]
+            df_mercado_sim = df_mercado_sim.merge(odds_alvo, on="clube_id", how="left")
+        for col, default in zip(odds_cols, [0.33, 0.34, 0.33]):
+            if col not in df_mercado_sim.columns:
+                df_mercado_sim[col] = default
+            else:
+                df_mercado_sim[col] = df_mercado_sim[col].fillna(default)
 
         for col in feat_cols:
             if col in df_mercado_sim.columns:
@@ -428,6 +445,11 @@ def main():
     df_media_cartoleiros = pd.read_parquet(media_cartoleiros_file)
     log.info(f"Medias dos cartoleiros carregadas: {len(df_media_cartoleiros)} medias")
 
+    odds_file = DATA_DIR / "odds.parquet"
+    df_odds = pd.read_parquet(odds_file) if odds_file.exists() else pd.DataFrame()
+    if not df_odds.empty:
+        log.info(f"Odds carregadas: {df_odds['rodada'].nunique()} rodadas")
+
     # Rodar backtest
     resultados = rodar_backtest(
         df_hist=df_hist,
@@ -436,7 +458,8 @@ def main():
         rodada_fim=args.fim,
         budget=args.budget,
         df_mercado_atual=df_mercado_atual,
-        df_media_cartoleiros=df_media_cartoleiros
+        df_media_cartoleiros=df_media_cartoleiros,
+        df_odds=df_odds,
     )
 
     if not resultados:
