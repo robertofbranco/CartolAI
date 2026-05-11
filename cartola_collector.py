@@ -11,6 +11,7 @@ Uso:
 """
 
 import os
+import re
 import time
 import json
 import logging
@@ -92,7 +93,8 @@ class CartolaAPI:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
     def _get(self, path: str, use_cache: bool = True) -> dict:
-        cache_file = self.cache_dir / (path.strip("/").replace("/", "_") + ".json")
+        safe_name = re.sub(r'[<>:"/\\|?*&=]+', "_", path.strip("/")) + ".json"
+        cache_file = self.cache_dir / safe_name
         if use_cache and cache_file.exists():
             return json.loads(cache_file.read_text())
 
@@ -110,29 +112,33 @@ class CartolaAPI:
                 time.sleep(2 ** attempt)
         raise RuntimeError(f"Falha ao acessar {path} após 3 tentativas")
 
-    def mercado_status(self):
+    def mercado_status(self) -> dict:
         return self._get("/mercado/status", use_cache=False)
 
-    def atletas_mercado(self):
+    def atletas_mercado(self) -> dict:
         return self._get("/atletas/mercado", use_cache=False)
 
-    def atletas_pontuados(self, rodada: int = None):
+    def atletas_pontuados(self, rodada: int = None) -> dict:
         path = f"/atletas/pontuados/{rodada}" if rodada else "/atletas/pontuados"
         return self._get(path)
 
-    def clubes(self):
+    def clubes(self) -> dict:
         return self._get("/clubes")
 
-    def rodadas(self):
+    def rodadas(self) -> dict:
         return self._get("/rodadas")
 
-    def partidas(self, rodada: int = None):
+    def partidas(self, rodada: int = None) -> dict:
         path = f"/partidas/{rodada}" if rodada else "/partidas"
         return self._get(path, use_cache=rodada is not None)
     
-    def pos_rodada(self, rodada: int):
+    def pos_rodada(self, rodada: int) -> dict:
         path = f"/pos-rodada/destaques/{rodada}"
-        return self._get(path, use_cache=rodada)
+        return self._get(path, use_cache=True)
+    
+    def liga(self, liga: int) -> dict:
+        path = f"/auth/liga/{liga}?orderBy=rodada"
+        return self._get(path, use_cache=True)
 
 
 class GatoMestreAPI:
@@ -372,6 +378,20 @@ def coletar_media_cartoleiros(api: CartolaAPI, rodadas_alvo: list[int]) -> pd.Da
 
     return  pd.DataFrame(medias_cartoleiros) if medias_cartoleiros else pd.DataFrame()
 
+def coletar_chaves_ligas(api: CartolaAPI, ligas: str) -> pd.DataFrame:
+    chaves_ligas = []
+    for liga in ligas:
+        chaves_mata_mata: dict = api.liga(liga)["chaves_mata_mata"]
+        for rodada, chaves in chaves_mata_mata.items():
+            for chave in chaves:
+                if chave["vencedor_id"] is None:
+                    break
+
+                pontos_vencedor = max(chave["time_mandante_pontuacao"], chave["time_visitante_pontuacao"])
+                chaves_ligas.append({"rodada": rodada, "pontos": pontos_vencedor})
+
+    return pd.DataFrame(chaves_ligas) if chaves_ligas else pd.DataFrame()
+
 
 # ──────────────────────────────────────────────
 # EXECUÇÃO
@@ -381,14 +401,10 @@ def main():
     parser = argparse.ArgumentParser(description="Cartola FC — Data Collector")
     parser.add_argument("--token",   type=str, default=None,
                         help="X-GLB-Token (Bearer ...). Default: $CARTOLA_TOKEN")
-    parser.add_argument("--gato-token", type=str, default=None,
-                        help="Bearer token do Gato Mestre (para odds). "
-                             "Default: $GATOMESTRE_TOKEN. Sem token, odds são puladas.")
     parser.add_argument("--rodadas", type=int, nargs="+",   default=None,
                         help="Rodadas a coletar (padrão: todas até a rodada atual)")
     args = parser.parse_args()
-    token = args.token or os.environ.get("CARTOLA_TOKEN")
-    gato_token = args.gato_token or os.environ.get("GATOMESTRE_TOKEN")
+    token = args.token or os.environ.get("CARTOLA_TOKEN")    
     api = CartolaAPI(token=token)
 
     status = api.mercado_status()
@@ -439,8 +455,8 @@ def main():
         log.info(f"Mercado atual salvo: {len(df_mercado_atual)} atletas → {mercado_file}")
 
     # ── Odds (Gato Mestre) ──
-    if gato_token:
-        gato_api = GatoMestreAPI(token=gato_token)
+    if token:
+        gato_api = GatoMestreAPI(token=token)
         # Inclui a rodada_atual (próxima a ser jogada) para uso na inferência ao vivo
         rodadas_para_odds = rodadas_alvo + [rodada_atual]
         df_odds = coletar_odds(gato_api, api.clubes(), sorted(set(rodadas_para_odds)))
@@ -457,6 +473,14 @@ def main():
         medias_cartoleiros_file = DATA_DIR / "medias_cartoleiros.parquet"
         df_medias_cartoleiros.to_parquet(medias_cartoleiros_file, index=False)
         log.info(f"Medias dos cartoleiros salvas: {df_medias_cartoleiros['rodada'].nunique()} rodadas → {medias_cartoleiros_file}")
+
+    # ── Chaves das ligas ──
+    LIGAS = ["1-mata-mata-brothers-do-graia-2026", "2o-mata-mata-brothers-do-graia"]
+    df_chaves_ligas = coletar_chaves_ligas(api, LIGAS)
+    if not df_chaves_ligas.empty:
+        chaves_ligas_file = DATA_DIR / "chaves_ligas.parquet"
+        df_chaves_ligas.to_parquet(chaves_ligas_file, index=False)
+        log.info(f"Chaves das ligas salvas: {df_chaves_ligas['rodada'].nunique()} rodadas e {len(df_chaves_ligas)} chaves → {chaves_ligas_file}")
 
 
 if __name__ == "__main__":
