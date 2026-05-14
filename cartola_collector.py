@@ -45,7 +45,7 @@ FORMATION = {
     6: 1,  # TEC
 }
 
-TEMPORADA_ATUAL = 2026
+CURRENT_SEASON = 2026
 
 BUDGET = 140.0
 
@@ -307,7 +307,7 @@ def get_odds(
 
 def carregar_dataset(
     temporadas_extras: tuple[int, ...] = (2022, 2023, 2024, 2025),
-    temporada_atual: int = TEMPORADA_ATUAL,
+    temporada_atual: int = CURRENT_SEASON,
     data_dir: Path = DATA_DIR,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
@@ -387,7 +387,7 @@ def main():
     parser = argparse.ArgumentParser(description="Cartola FC — Data Collector")
     parser.add_argument("--rodadas", type=int, nargs="+",   default=None,
                         help="Rodadas a coletar (padrão: todas até a rodada atual)")
-    parser.add_argument("--temporada", type=int, nargs="+",   default=TEMPORADA_ATUAL,
+    parser.add_argument("--temporada", type=int, nargs="+",   default=CURRENT_SEASON,
                         help="Temporada a coletar (padrão: temporada atual)")
     args = parser.parse_args()
     token = os.environ.get("CARTOLA_TOKEN")    
@@ -404,7 +404,7 @@ def main():
         return
 
     # ── Players data per round ──
-    players_per_round_file = DATA_DIR / "jogadores_por_rodada.parquet"
+    players_per_round_file = DATA_DIR / f"jogadores_por_rodada_{args.temporada}.parquet"
     if players_per_round_file.exists():
         df_players_per_round = pd.read_parquet(players_per_round_file)
         missing_rounds = [r for r in target_rounds if r not in df_players_per_round["rodada"].unique()]
@@ -420,6 +420,14 @@ def main():
     df_players_per_round.to_parquet(players_per_round_file, index=False)
     log.info(f"Dados de jogadores por rodada salvo: {df_players_per_round['rodada'].nunique()} rodadas, "
              f"{df_players_per_round['atleta_id'].nunique()} atletas → {players_per_round_file}")
+    
+    
+    # ── Partidas ──
+    df_partidas = preparar_partidas(api, target_rounds)
+    if not df_partidas.empty:
+        partidas_file = DATA_DIR / f"partidas_{args.temporada}.parquet"
+        df_partidas.to_parquet(partidas_file, index=False)
+        log.info(f"Partidas salvas → {partidas_file}")
 
     # ── Current market (price, mean, status_id, matches) ──
     df_current_market = get_current_market(api)
@@ -435,7 +443,7 @@ def main():
         rodadas_para_odds = target_rounds + [current_round]
         df_odds = get_odds(gato_api, api.clubes(), sorted(set(rodadas_para_odds)))
         if not df_odds.empty:
-            odds_file = DATA_DIR / "odds.parquet"
+            odds_file = DATA_DIR / f"odds_{args.temporada}.parquet"
             df_odds.to_parquet(odds_file, index=False)
             log.info(f"Odds salvas: {df_odds['rodada'].nunique()} rodadas → {odds_file}")
     else:
