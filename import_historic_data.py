@@ -19,12 +19,15 @@ import argparse
 import logging
 import os
 from io import StringIO
+from dotenv import load_dotenv
 
 import pandas as pd
 import requests
 from tqdm import tqdm
 
 from cartola_collector import CartolaAPI, DATA_DIR, GatoMestreAPI
+
+load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -97,6 +100,8 @@ def baixar_rodada(year: int, rodada: int) -> pd.DataFrame:
 
 
 def normalizar_rodada(df_raw: pd.DataFrame, year: int) -> pd.DataFrame:
+    jogou_col = "entrou em campo"
+
     cols_existentes = {k: v for k, v in CARTOLA_RENAME.items() if k in df_raw.columns}
     out = df_raw[list(cols_existentes)].rename(columns=cols_existentes).copy()
     out["temporada"] = year
@@ -114,6 +119,13 @@ def normalizar_rodada(df_raw: pd.DataFrame, year: int) -> pd.DataFrame:
     out["pontos"]     = pd.to_numeric(out["pontos"],     errors="coerce").astype(float)
     out["preco"]      = pd.to_numeric(out["preco"],      errors="coerce").astype(float)
     out["media"]      = pd.to_numeric(out["media"],      errors="coerce").astype(float)
+    out["jogou"] = (
+        pd.to_numeric(df_raw[jogou_col], errors="coerce")
+        .fillna(0)
+        .astype(bool)
+        if jogou_col in df_raw.columns
+        else out["media"].fillna(0) != 0
+    )
     return out.dropna(subset=["atleta_id", "rodada", "clube_id"])
 
 
@@ -220,11 +232,11 @@ def build_abbr_to_clube_id(data_dir, year: int) -> dict[str, int]:
             elif raw in NOME_TO_ABBR:
                 abbr_to_id.setdefault(NOME_TO_ABBR[raw], cid)
 
-    primary = data_dir / f"historico_{year}.parquet"
+    primary = data_dir / f"jogadores_por_rodada_{year}.parquet"
     if primary.exists():
         _ingest_parquet(primary)
 
-    for parquet in sorted(data_dir.glob("historico_*.parquet")):
+    for parquet in sorted(data_dir.glob("jogadores_por_rodada_*.parquet")):
         if parquet != primary:
             _ingest_parquet(parquet)
 
@@ -241,15 +253,11 @@ def build_abbr_to_clube_id(data_dir, year: int) -> dict[str, int]:
 
 def main():
     parser = argparse.ArgumentParser(description="Importa dados de temporada anterior")
-    parser.add_argument("--year",        type=int, default=2025)
-    parser.add_argument("--gato-token",  type=str, default=None,
-                        help="Bearer do Gato Mestre. Default: $GATOMESTRE_TOKEN")
-    parser.add_argument("--rodadas",     type=int, nargs="+", default=None,
-                        help="Subset de rodadas (default: 1..38)")    
+    parser.add_argument("--year", type=int, default=2025)   
     args = parser.parse_args()
 
-    rodadas = args.rodadas or list(range(1, 39))
-    gato_token = args.gato_token or os.environ.get("GATOMESTRE_TOKEN")
+    rodadas = list(range(1, 39))
+    token = os.environ.get("CARTOLA_TOKEN")
 
     log.info(f"Importando histórico de {args.year} do caRtola...")
     df_hist = importar_historico(args.year, rodadas)
@@ -257,7 +265,7 @@ def main():
         log.error("Nenhum dado coletado.")
         return
 
-    hist_path = DATA_DIR / f"historico_{args.year}.parquet"
+    hist_path = DATA_DIR / f"jogadores_por_rodada_{args.year}.parquet"
     df_hist.to_parquet(hist_path, index=False)
     log.info(
         f"Histórico {args.year} salvo: {df_hist['rodada'].nunique()} rodadas, "
@@ -267,14 +275,14 @@ def main():
     abbr_to_id = build_abbr_to_clube_id(DATA_DIR, args.year)
     log.info(f"Mapa abbr→clube_id construído com {len(abbr_to_id)} clubes")
 
-    if not gato_token:
+    if not token:
         log.warning(
             "GATOMESTRE_TOKEN não definido — partidas e odds de "
             f"{args.year} não foram coletadas. Defina o token e rode novamente."
         )
         return
 
-    gato_api = GatoMestreAPI(token=gato_token, temporada=args.year)
+    gato_api = GatoMestreAPI(token=token, temporada=args.year)
     df_partidas, df_odds = importar_partidas_odds(gato_api, abbr_to_id, rodadas, args.year)
 
     if not df_partidas.empty:
