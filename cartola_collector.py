@@ -104,6 +104,15 @@ class CartolaAPI:
     def partidas(self, rodada: int = None):
         path = f"/partidas/{rodada}" if rodada else "/partidas"
         return self._get(path, use_cache=rodada is not None)
+    
+    def pos_rodada(self, rodada: int):
+        path = f"/pos-rodada/destaques/{rodada}"
+        return self._get(path, use_cache=rodada)
+    
+    def liga(self, liga: str):
+        path = f"/liga/{liga}"
+        return self._get(path, use_cache=True)
+
 
 
 # ──────────────────────────────────────────────
