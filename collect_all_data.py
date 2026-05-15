@@ -18,7 +18,7 @@ import pandas as pd
 from dotenv import load_dotenv
 
 from cartola_data import CURRENT_SEASON, DATA_DIR, collect_current_season
-from cartola_data.historic import import_historic_season
+from cartola_data.historic import get_players_data_from_caRtola, import_historic_season
 from cartola_data.transforms import deduplicate_by_key
 
 load_dotenv()
@@ -156,6 +156,20 @@ def run_collectors(args: argparse.Namespace) -> None:
             )
 
     if not args.skip_current:
+        players = get_players_data_from_caRtola(args.current_season)
+        if not players.empty:
+            log.error("Nenhum dado coletado do repositorio caRtola para %s.", args.current_season)
+
+            players_path = DATA_DIR / f"jogadores_por_rodada_{args.current_season}.parquet"
+            players.to_parquet(players_path, index=False)            
+            log.info(
+                "Historico %s salvo: %s rodadas, %s atletas -> %s",
+                args.current_season,
+                players["rodada"].nunique(),
+                players["atleta_id"].nunique(),
+                players_path,
+            )
+
         collect_current_season(
             temporada=args.current_season,            
             token=token,

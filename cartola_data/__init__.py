@@ -26,7 +26,7 @@ from .current import (
     preparar_partidas,
 )
 from .datasets import read_datasets
-from .transforms import calculate_player_running_average, safe_filename
+from .transforms import  safe_filename
 
 __all__ = [
     "BASE_URL",

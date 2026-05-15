@@ -8,7 +8,7 @@ from tqdm import tqdm
 
 from .api import CartolaAPI, GatoMestreAPI
 from .config import CURRENT_SEASON, DATA_DIR, DEFAULT_LIGAS
-from .transforms import calculate_player_running_average, deduplicate_by_key
+from .transforms import deduplicate_by_key
 
 log = logging.getLogger(__name__)
 
@@ -88,7 +88,7 @@ def get_players_data(
         ["temporada", "rodada", "atleta_id"],
         prefer_played=True,
     )
-    return calculate_player_running_average(df)
+    return df
 
 
 def get_current_market(api: CartolaAPI) -> pd.DataFrame:
@@ -318,7 +318,7 @@ def collect_current_season(
             ["temporada", "rodada", "atleta_id"],
             prefer_played=True,
         )
-        players = calculate_player_running_average(players)
+                
         _save_yearly_dataset(players, players_file, result, "jogadores_por_rodada")
         log.info(
             "Jogadores por rodada salvos: %s rodadas, %s atletas -> %s",
