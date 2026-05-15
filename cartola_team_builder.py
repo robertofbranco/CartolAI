@@ -8,7 +8,7 @@ from sklearn.metrics import mean_absolute_error
 
 from feature_engineering import FEATURE_COLS, build_features
 
-from cartola_data.config import DATA_DIR, FORMATION, POSICAO_NOME, STATUS
+from cartola_data.config import CURRENT_SEASON, DATA_DIR, FORMATION, POSICAO_NOME, STATUS
 from cartola_data.api import CartolaAPI
 from cartola_data.datasets import read_datasets
 
@@ -168,7 +168,11 @@ def imprimir_time(time_df: pd.DataFrame):
     print("="*60)
 
 
-def prepare_market_data(df_feat: pd.DataFrame, rodada_alvo: int) -> pd.DataFrame:
+def prepare_market_data(
+    df_feat: pd.DataFrame,
+    rodada_alvo: int,
+    season: int = CURRENT_SEASON,
+) -> pd.DataFrame:
     market_file = DATA_DIR / "mercado_atual.parquet"
     market_df = pd.read_parquet(market_file)
 
@@ -178,13 +182,26 @@ def prepare_market_data(df_feat: pd.DataFrame, rodada_alvo: int) -> pd.DataFrame
     
     clubes_map = {int(k): v["nome"] for k, v in api.clubes().items()}
     market_df["clube_nome"] = market_df["clube_id"].map(clubes_map).fillna("")
+    market_df["temporada"]  = season
     market_df["rodada"]     = rodada_alvo
 
-    ultima_feat = (
-        df_feat[df_feat["rodada"] == df_feat["rodada"].max()]
-        [["atleta_id"] + [c for c in FEATURE_COLS if c not in market_df.columns]]
-        .drop_duplicates("atleta_id")
-    )
+    feature_cols = ["atleta_id"] + [c for c in FEATURE_COLS if c not in market_df.columns]
+    previous_features = df_feat.loc[
+        (df_feat["temporada"] == season)
+        & (df_feat["rodada"] < rodada_alvo)
+    ].copy()
+    sort_cols = ["temporada", "rodada"]
+
+    if previous_features.empty:
+        ultima_feat = pd.DataFrame(columns=feature_cols)
+    else:
+        ultima_feat = (
+            previous_features
+            .sort_values(sort_cols)
+            [feature_cols]
+            .drop_duplicates("atleta_id", keep="last")
+        )
+
     market_df = market_df.merge(ultima_feat, on="atleta_id", how="left")
     for col in FEATURE_COLS:
         if col in market_df.columns:
