@@ -25,7 +25,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger(__name__)
 
 ODDS_COLS = ["prob_win", "prob_draw", "prob_loss"]
-POS_THRESHOLD = [1, 6]
+POS_THRESHOLD = [1, 3, 6]
 
 
 def train_model(df: pd.DataFrame, round_limit: int, season: int | None = None):
