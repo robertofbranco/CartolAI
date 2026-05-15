@@ -11,7 +11,7 @@ def read_required_parquet(path: Path, hint: str) -> pd.DataFrame:
     return pd.read_parquet(path)
 
 
-def read_datasets(data_dir: Path = DATA_DIR) -> tuple[pd.DataFrame, pd.DataFrame]:
+def read_datasets(data_dir: Path = DATA_DIR) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     players_file = data_dir / "jogadores_por_rodada.parquet"
     matches_file = data_dir / "partidas.parquet"
     odds_file    = data_dir / "odds.parquet"
