@@ -41,8 +41,6 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--historic-years", type=int, nargs="+", default=DEFAULT_HISTORIC_YEARS)
     parser.add_argument("--current-season", type=int, default=CURRENT_SEASON)
-    parser.add_argument("--historic-rodadas", type=int, nargs="+", default=None)
-    parser.add_argument("--current-rodadas", type=int, nargs="+", default=None)
     parser.add_argument("--skip-historic", action="store_true")
     parser.add_argument("--skip-current", action="store_true")
     parser.add_argument("--skip-gato", action="store_true")
@@ -152,16 +150,14 @@ def run_collectors(args: argparse.Namespace) -> None:
     if not args.skip_historic:
         for year in args.historic_years:
             import_historic_season(
-                year=year,
-                rounds=args.historic_rodadas,
+                year=year,                
                 token=token,
                 collect_gato_data=not args.skip_gato,
             )
 
     if not args.skip_current:
         collect_current_season(
-            temporada=args.current_season,
-            rodadas=args.current_rodadas,
+            temporada=args.current_season,            
             token=token,
         )
 
