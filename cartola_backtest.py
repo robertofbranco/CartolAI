@@ -30,9 +30,11 @@ from dataclasses import dataclass, field
 
 from cartola_team_builder import (
     build_team,
-    train_model,
     POSICAO_NOME,
-    FORMATION
+    FORMATION,
+    feature_cols_from_models,
+    mean_mae_from_models,
+    train_models_by_position,
 )
 
 
@@ -335,7 +337,7 @@ def rodar_backtest(
         df_feat = build_features(df_players_per_round_training, df_matches_training, df_odds_training)
 
         try:
-            model, feat_cols, mae = train_model(
+            models_by_pos = train_models_by_position(
                 df_feat,
                 round_limit=rodada_alvo,
                 season=season,
@@ -343,6 +345,8 @@ def rodar_backtest(
         except ValueError as e:
             log.warning(f"Rodada {rodada_alvo}: {e}")
             continue
+        feat_cols = feature_cols_from_models(models_by_pos)
+        mae = mean_mae_from_models(models_by_pos)
 
         # Simular mercado: snapshot dos jogadores na rodada alvo
         # (usamos os dados daquela rodada como proxy de mercado)
@@ -370,7 +374,7 @@ def rodar_backtest(
 
         # Montar time com o modelo
         try:
-            time_modelo = build_team(df_mercado_sim, model, feat_cols, formation)
+            time_modelo = build_team(df_mercado_sim, models_by_pos, formation)
         except Exception as e:
             log.warning(f"Rodada {rodada_alvo}: otimização falhou — {e}")
             continue

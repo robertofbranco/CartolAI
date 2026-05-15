@@ -74,17 +74,54 @@ def train_model(df: pd.DataFrame, round_limit: int, season: int | None = None):
     return model, feat_cols, mae
 
 
+def train_models_by_position(df: pd.DataFrame, round_limit: int, season: int | None = None):
+    models = {}
+
+    for posicao_id, df_pos in df.groupby("posicao_id"):
+        model, feat_cols, mae = train_model(df_pos, round_limit, season)
+        models[int(posicao_id)] = {
+            "model": model,
+            "feature_cols": feat_cols,
+            "mae": mae,
+        }
+
+    return models
+
+
+def feature_cols_from_models(models_by_position: dict) -> list[str]:
+    feature_cols = []
+    for model_info in models_by_position.values():
+        for col in model_info["feature_cols"]:
+            if col not in feature_cols:
+                feature_cols.append(col)
+    return feature_cols
+
+
+def mean_mae_from_models(models_by_position: dict) -> float:
+    maes = [model_info["mae"] for model_info in models_by_position.values()]
+    if not maes:
+        raise ValueError("Nenhum modelo por posição foi treinado.")
+    return float(sum(maes) / len(maes))
+
+
 def build_team(
     market_df: pd.DataFrame,
-    model: RandomForestRegressor,
-    feat_cols: list[str],
+    models_by_position: dict,
     formation: dict = FORMATION
 ) -> pd.DataFrame:
     df = market_df[market_df['status_id'] == STATUS["Provavel"]].copy()
+    df["pontos_previstos"] = 0.0
 
-    # Predict points
-    X = df[[c for c in feat_cols if c in df.columns]].fillna(0)
-    df["pontos_previstos"] = model.predict(X)
+    for posicao_id, model_info in models_by_position.items():
+        mask = df["posicao_id"] == posicao_id
+        if not mask.any():
+            continue
+
+        feat_cols = model_info["feature_cols"]
+        model: RandomForestRegressor = model_info["model"]
+
+        X = df.loc[mask].reindex(columns=feat_cols).fillna(0)
+        df.loc[mask, "pontos_previstos"] = model.predict(X)
 
     df = df.sort_values("pontos_previstos", ascending=False)
 
@@ -166,11 +203,14 @@ def main():
     
     features = build_features(df_players_per_round, df_matches, df_odds)
 
-    model, feature_cols, mae = train_model(features, 15)
+    models_by_pos = train_models_by_position(features, 15)
+    feature_cols = feature_cols_from_models(models_by_pos)
+    mae = mean_mae_from_models(models_by_pos)
+    log.info(f"MAE médio por posição: {mae:.3f} pts | Features: {len(feature_cols)}")
 
     market_data = prepare_market_data(features, 16)
 
-    team = build_team(market_data, model, feature_cols)
+    team = build_team(market_data, models_by_pos)
 
     imprimir_time(team)
 
