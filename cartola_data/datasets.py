@@ -14,13 +14,11 @@ def read_required_parquet(path: Path, hint: str) -> pd.DataFrame:
 def read_datasets(data_dir: Path = DATA_DIR) -> tuple[pd.DataFrame, pd.DataFrame]:
     players_file = data_dir / "jogadores_por_rodada.parquet"
     matches_file = data_dir / "partidas.parquet"
+    odds_file    = data_dir / "odds.parquet"
+    hint = "Run collect_all_data.py to collect and merge the datasets."
 
-    players = read_required_parquet(
-        players_file,
-        "Run collect_all_data.py to collect and merge the datasets.",
-    )
-    matches = read_required_parquet(
-        matches_file,
-        "Run collect_all_data.py to collect and merge the datasets.",
-    )
-    return players, matches
+    players = read_required_parquet(players_file, hint)
+    matches = read_required_parquet(matches_file, hint)
+    odds = read_required_parquet(odds_file, hint)
+
+    return players, matches, odds
