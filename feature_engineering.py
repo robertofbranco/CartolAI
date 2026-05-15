@@ -4,14 +4,16 @@ import pandas as pd
 from sklearn.preprocessing import LabelEncoder
 
 FEATURE_COLS = [
-    "posicao_enc", "clube_enc", # "preco_lag1",
+    #"clube_enc", 
+    #"preco_lag1",
     "media_pts_5r", "media_pts_3r", "media_pts_10r",
     "std_pts_5r", "std_pts_3r",
     "regularidade_5r", #"pts_ultima_rodada",
     "mando",
     "scout_G_5r", "scout_A_5r", "scout_SG_5r",
     "scout_GS_5r", "scout_DE_5r",
-    "prob_win", "prob_draw", "prob_loss"
+    "prob_win", "prob_draw", "prob_loss",
+    "gols_feitos_clube_5r", "gols_sofridos_clube_5r"
 ]
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -20,8 +22,8 @@ log = logging.getLogger(__name__)
 
 def build_features(
     players_per_round: pd.DataFrame,
-    partidas_df: pd.DataFrame | None = None,
-    odds_df: pd.DataFrame | None = None,
+    partidas_df: pd.DataFrame,
+    odds_df: pd.DataFrame,
 ) -> pd.DataFrame:
     """
     Generates temporal and contextual features for each (player, round)
@@ -31,44 +33,76 @@ def build_features(
     players_per_round = players_per_round.copy()
     players_per_round[scout_cols] = players_per_round[scout_cols].fillna(0)
     features_df = players_per_round.copy()
-    features_df = features_df.sort_values(["atleta_id", "rodada"]).copy()
+    temporal_group_cols = ["temporada", "atleta_id"] if "temporada" in features_df.columns else ["atleta_id"]
+    sort_cols = temporal_group_cols + ["rodada"]
+    features_df = features_df.sort_values(sort_cols).copy()
 
     for window in [3, 5, 10]:
         features_df[f"media_pts_{window}r"] = (
-            features_df.groupby("atleta_id")["pontos"]
+            features_df.groupby(temporal_group_cols)["pontos"]
             .transform(lambda x: x.shift(1).rolling(window, min_periods=1).mean())
         )
         features_df[f"std_pts_{window}r"] = (
-            features_df.groupby("atleta_id")["pontos"]
+            features_df.groupby(temporal_group_cols)["pontos"]
             .transform(lambda x: x.shift(1).rolling(window, min_periods=1).std().fillna(0))
         )
 
-    features_df["pts_ultima_rodada"] = features_df.groupby("atleta_id")["pontos"].shift(1)
+    features_df["pts_ultima_rodada"] = features_df.groupby(temporal_group_cols)["pontos"].shift(1)
 
-    for col in [feat for feat in FEATURE_COLS if feat.startswith('scout')]:
+    for col in ["scout_G", "scout_A", "scout_SG", "scout_GS", "scout_DE"]:
         if col in features_df.columns:
+            round_col = f"{col}_round"
+
+            features_df[round_col] = (
+                features_df.groupby(["temporada", "atleta_id"])[col]
+                .diff()
+            )
+            is_first_player_season_row = features_df.groupby(["temporada", "atleta_id"]).cumcount() == 0
+            features_df.loc[is_first_player_season_row, round_col] = features_df.loc[
+                is_first_player_season_row,
+                col,
+            ]
+
             features_df[f"{col}_5r"] = (
-                features_df.groupby("atleta_id")[col]
+                features_df.groupby(["temporada", "atleta_id"])[round_col]
                 .transform(lambda x: x.shift(1).rolling(5, min_periods=1).mean())
             )
     
     features_df["regularidade_5r"] = (
-        features_df.groupby("atleta_id")["jogou"]
+        features_df.groupby(temporal_group_cols)["jogou"]
         .transform(lambda x: x.shift(1).rolling(5, min_periods=1).mean())
     )
 
-    features_df["preco_lag1"] = features_df.groupby("atleta_id")["preco"].shift(1)
+    features_df["preco_lag1"] = features_df.groupby(temporal_group_cols)["preco"].shift(1)
+    
+    match_keys = ["temporada", "rodada", "clube_id"]
+    features_df = features_df.merge(
+        partidas_df[match_keys + ["mando"]].drop_duplicates(match_keys),
+        on=match_keys,
+        how="left",
+    )
+    features_df["mando"] = features_df["mando"].fillna(0)
 
-    if partidas_df is not None and not partidas_df.empty:
-        match_keys = ["temporada", "rodada", "clube_id"]
-        features_df = features_df.merge(
-            partidas_df[match_keys + ["mando"]].drop_duplicates(match_keys),
-            on=match_keys,
-            how="left",
+    match_goal_cols = ["gols_feitos_clube", "gols_sofridos_clube"]
+    club_group_cols = ["temporada", "clube_id"]
+    club_goals_df = (
+        partidas_df[match_keys + match_goal_cols]
+        .drop_duplicates(match_keys)
+        .sort_values(club_group_cols + ["rodada"])
+        .copy()
+    )
+
+    for col in match_goal_cols:
+        club_goals_df[f"{col}_5r"] = (
+            club_goals_df.groupby(club_group_cols)[col]
+            .transform(lambda x: x.shift(1).rolling(5, min_periods=1).mean())
         )
-        features_df["mando"] = features_df["mando"].fillna(0)
-    else:
-        features_df["mando"] = 0
+
+    features_df = features_df.merge(
+        club_goals_df[match_keys + ["gols_feitos_clube_5r", "gols_sofridos_clube_5r"]],
+        on=match_keys,
+        how="left",
+    )
 
     odds_cols = ["prob_win", "prob_draw", "prob_loss"]
     available_odds_cols = [col for col in odds_cols if odds_df is not None and col in odds_df.columns]
@@ -85,8 +119,7 @@ def build_features(
         features_df[["prob_win", "prob_draw", "prob_loss"]]
         .fillna({"prob_win": 1/3, "prob_draw": 1/3, "prob_loss": 1/3})
     )
-
-    features_df["posicao_enc"] = features_df["posicao_id"].astype(int)
-    features_df["clube_enc"] = LabelEncoder().fit_transform(features_df["clube_id"].astype(str))
+    
+    #features_df["clube_enc"] = LabelEncoder().fit_transform(features_df["clube_id"].astype(str))
 
     return features_df
