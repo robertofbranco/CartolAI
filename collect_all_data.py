@@ -44,6 +44,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-historic", action="store_true")
     parser.add_argument("--skip-current", action="store_true")
     parser.add_argument("--skip-gato", action="store_true")
+    parser.add_argument("--skip-players", action="store_true")
     parser.add_argument("--skip-merge", action="store_true")
     parser.add_argument("--merge-only", action="store_true")
     parser.add_argument(
@@ -153,6 +154,7 @@ def run_collectors(args: argparse.Namespace) -> None:
                 year=year,                
                 token=token,
                 collect_gato_data=not args.skip_gato,
+                collect_players_data=not args.skip_players,
             )
 
     if not args.skip_current:

@@ -18,7 +18,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Import previous Cartola seasons")
     parser.add_argument("--year", type=int, nargs="+", default=[2025])
     parser.add_argument("--rodadas", type=int, nargs="+", default=None)
-    parser.add_argument("--skip-gato", action="store_true")
+    parser.add_argument("--skip-players", action="store_true")
+    parser.add_argument(
+        "--skip-cbf",
+        action="store_true",
+        help="Skip official CBF match score collection.",
+    )
+    parser.add_argument(
+        "--skip-gato",
+        action="store_true",
+        help="Skip Gato Mestre odds collection.",
+    )
     args = parser.parse_args()
 
     token = os.environ.get("CARTOLA_TOKEN")
@@ -28,6 +38,8 @@ def main() -> None:
             rounds=args.rodadas,
             token=token,
             collect_gato_data=not args.skip_gato,
+            collect_players_data=not args.skip_players,
+            collect_cbf_data=not args.skip_cbf,
         )
 
 
