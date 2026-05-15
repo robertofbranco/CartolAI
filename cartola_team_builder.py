@@ -26,6 +26,7 @@ log = logging.getLogger(__name__)
 
 ODDS_COLS = ["prob_win", "prob_draw", "prob_loss"]
 POS_THRESHOLD = [1, 3, 6]
+TEC_POSITION_ID = 6
 
 
 def train_model(df: pd.DataFrame, round_limit: int, season: int | None = None):
@@ -172,11 +173,106 @@ def apply_odds_filter(
     return eligible
 
 
+def _did_not_play(value) -> bool:
+    """Return True only when a played flag is explicitly false."""
+    if pd.isna(value):
+        return False
+
+    if isinstance(value, str):
+        return value.strip().lower() in {"false", "0", "nao", "n"}
+
+    return value is False or value == 0
+
+
+def _played_lookup(team_df: pd.DataFrame, play_status_df: pd.DataFrame | None = None) -> dict:
+    status_source = play_status_df if play_status_df is not None else team_df
+    if not {"atleta_id", "jogou"}.issubset(status_source.columns):
+        return {}
+
+    return (
+        status_source[["atleta_id", "jogou"]]
+        .dropna(subset=["atleta_id"])
+        .drop_duplicates("atleta_id", keep="last")
+        .set_index("atleta_id")["jogou"]
+        .to_dict()
+    )
+
+
+def apply_reserve_substitutions(
+    team_df: pd.DataFrame,
+    play_status_df: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """
+    Return the scoring lineup after same-position reserve substitutions.
+
+    Each non-TEC position can have at most one reserve, and that reserve can
+    replace at most one starter whose `jogou` flag is explicitly False.
+    """
+    if team_df.empty:
+        return team_df.copy()
+
+    team_df = team_df.copy()
+    if "reserva" not in team_df.columns:
+        team_df["reserva"] = False
+
+    played_by_athlete = _played_lookup(team_df, play_status_df)
+    starters = team_df[~team_df["reserva"].fillna(False).astype(bool)].copy()
+    reserves = team_df[team_df["reserva"].fillna(False).astype(bool)].copy()
+    final_players = []
+
+    for position, position_starters in starters.groupby("posicao_id", sort=False):
+        position_starters = position_starters.copy()
+        replacement_row = None
+        replaced_index = None
+
+        if int(position) != TEC_POSITION_ID:
+            position_reserves = reserves[reserves["posicao_id"] == position]
+            if not position_reserves.empty:
+                reserve = position_reserves.iloc[0].copy()
+                for starter_index, starter in position_starters.iterrows():
+                    played_value = played_by_athlete.get(
+                        starter["atleta_id"],
+                        starter.get("jogou", pd.NA),
+                    )
+                    if _did_not_play(played_value):
+                        reserve["substituiu_atleta_id"] = starter["atleta_id"]
+                        reserve["substituiu_apelido"] = starter.get("apelido", "")
+                        replacement_row = reserve
+                        replaced_index = starter_index
+                        break
+
+        if replacement_row is not None:
+            position_starters = position_starters.drop(index=replaced_index)
+            final_players.extend(position_starters.to_dict("records"))
+            final_players.append(replacement_row.to_dict())
+        else:
+            final_players.extend(position_starters.to_dict("records"))
+
+    final_df = pd.DataFrame(final_players)
+    if final_df.empty:
+        return final_df
+
+    if "substituiu_atleta_id" not in final_df.columns:
+        final_df["substituiu_atleta_id"] = pd.NA
+    if "substituiu_apelido" not in final_df.columns:
+        final_df["substituiu_apelido"] = ""
+
+    sort_score = "pontos_previstos" if "pontos_previstos" in final_df.columns else "pontos"
+    sort_columns = ["posicao_id"]
+    ascending = [True]
+    if sort_score in final_df.columns:
+        sort_columns.append(sort_score)
+        ascending.append(False)
+
+    return final_df.sort_values(sort_columns, ascending=ascending).reset_index(drop=True)
+
+
 def build_team(
     market_df: pd.DataFrame,
     models_by_position: dict,
     formation: dict = FORMATION,
     odds_filter: dict | None = ODDS_FILTER,
+    include_reserves: bool = False,
 ) -> pd.DataFrame:
     df = market_df[market_df['status_id'] == STATUS["Provavel"]].copy()
     df["pontos_previstos"] = 0.0
@@ -205,17 +301,25 @@ def build_team(
                 max_prob_loss=odds_filter["max_prob_loss"],
             )
         chosen = []
+        selection_limit = n_players + (0 if int(position) == TEC_POSITION_ID else 1)
 
         for _, player in position_pool.iterrows():            
-            if len(chosen) >= n_players:
+            if len(chosen) >= selection_limit:
                 break
 
+            player = player.copy()
+            player["reserva"] = len(chosen) >= n_players
             chosen.append(player)
 
         selected_players.extend(chosen)
 
     team_df = pd.DataFrame(selected_players)
     team_df = team_df.sort_values(["posicao_id", "pontos_previstos"], ascending=[True, False])
+
+    if include_reserves:
+        return team_df.reset_index(drop=True)
+
+    team_df = apply_reserve_substitutions(team_df)
 
     return team_df
 

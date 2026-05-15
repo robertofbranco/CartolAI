@@ -29,6 +29,7 @@ from pathlib import Path
 from dataclasses import dataclass, field
 
 from cartola_team_builder import (
+    apply_reserve_substitutions,
     build_team,
     merge_target_round_odds,
     ODDS_COLS,
@@ -530,7 +531,13 @@ def rodar_backtest(
 
         # Montar time com o modelo
         try:
-            time_modelo = build_team(df_mercado_sim, models_by_pos, formation)
+            time_modelo = build_team(
+                df_mercado_sim,
+                models_by_pos,
+                formation,
+                include_reserves=True,
+            )
+            time_modelo = apply_reserve_substitutions(time_modelo, df_rodada_real)
         except Exception as e:
             log.warning(f"Rodada {rodada_alvo}: otimização falhou — {e}")
             continue
@@ -565,8 +572,9 @@ def rodar_backtest(
             apelido = (p["apelido"] or "")[:20]
             clube = (p.get("clube") or "")[:16]
             adv = (p["adversario"] or "")[:16]
+            reserva = " RES" if bool(p.get("reserva", False)) else ""
             log.info(
-                f"  {p['posicao']:<3} {apelido:<20} {clube:<16} vs {adv:<16} "
+                f"  {p['posicao']:<3} {apelido:<20} {clube:<16} vs {adv:<16}{reserva:<4} "
                 f"avg={p['media']:>5.2f} preco={p['preco']:>5.1f} "
                 f"pts={p['pontos_real']:>5.1f}"
             )
@@ -805,6 +813,9 @@ def gerar_relatorio(resultados: list[ResultadoRodada], output_dir: Path = RESULT
         "mando",
         "pontos",
         "pontos_previstos",
+        "reserva",
+        "substituiu_atleta_id",
+        "substituiu_apelido",
     ]
     if selected_players_rows:
         selected_players_df = pd.concat(selected_players_rows, ignore_index=True)
