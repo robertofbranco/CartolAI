@@ -3,7 +3,8 @@ from pathlib import Path
 BASE_URL = "https://api.cartola.globo.com"
 GATOMESTRE_BASE = "https://api.gatomestre.globo.com"
 
-DATA_DIR = Path("data")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DATA_DIR = PROJECT_ROOT / "data"
 DATA_DIR.mkdir(exist_ok=True)
 
 CURRENT_SEASON = 2026
