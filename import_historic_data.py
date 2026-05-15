@@ -18,7 +18,9 @@ Uso:
 import argparse
 import logging
 import os
+from dataclasses import dataclass, field
 from io import StringIO
+from pathlib import Path
 from dotenv import load_dotenv
 
 import pandas as pd
@@ -31,6 +33,12 @@ load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
+
+
+@dataclass
+class HistoricImportResult:
+    year: int
+    files: dict[str, Path] = field(default_factory=dict)
 
 
 CARTOLA_REPO_BASE = (
@@ -53,10 +61,16 @@ CARTOLA_RENAME = {
     "atletas.jogos_num":            "jogos",
 }
 
-# Colunas de scout reconhecidas (subset que tem ponto no SCOUT_POINTS).
+# SCOUTS
 RECOGNIZED_SCOUTS = {
-    "CA", "FC", "FF", "G", "I", "DS", "FS", "FD", "GS", "A",
-    "FT", "CV", "DP", "SG", "PC", "PP", "GC",
+    # Attack
+    "G", "A", "FT", "FD", "FF", "FS", "PS", "PP", "I",
+    # Defense
+    "SG", "DS", "GC", "CV", "CA", "GS", "FC", "PC",
+    # Goalkeeper only
+    "DP", "DE",
+    # Coach only
+    "V",
 }
 
 # Nomes longos do CSV caRtola (2022–2024) → abbr de 3 letras usado pelo
@@ -251,49 +265,77 @@ def build_abbr_to_clube_id(data_dir, year: int) -> dict[str, int]:
     return abbr_to_id
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Importa dados de temporada anterior")
-    parser.add_argument("--year", type=int, default=2025)   
-    args = parser.parse_args()
+def import_historic_season(
+    year: int,
+    rodadas: list[int] | None = None,
+    token: str | None = None,
+    collect_gato_data: bool = True,
+) -> HistoricImportResult:
+    """Import one finished season from caRtola and, when possible, Gato Mestre."""
+    rounds = rodadas or list(range(1, 39))
+    result = HistoricImportResult(year=year)
 
-    rodadas = list(range(1, 39))
-    token = os.environ.get("CARTOLA_TOKEN")
-
-    log.info(f"Importando histórico de {args.year} do caRtola...")
-    df_hist = importar_historico(args.year, rodadas)
+    log.info(f"Importando historico de {year} do caRtola...")
+    df_hist = importar_historico(year, rounds)
     if df_hist.empty:
-        log.error("Nenhum dado coletado.")
-        return
+        log.error(f"Nenhum dado coletado para {year}.")
+        return result
 
-    hist_path = DATA_DIR / f"jogadores_por_rodada_{args.year}.parquet"
+    hist_path = DATA_DIR / f"jogadores_por_rodada_{year}.parquet"
     df_hist.to_parquet(hist_path, index=False)
+    result.files["jogadores_por_rodada"] = hist_path
     log.info(
-        f"Histórico {args.year} salvo: {df_hist['rodada'].nunique()} rodadas, "
-        f"{df_hist['atleta_id'].nunique()} atletas → {hist_path}"
+        f"Historico {year} salvo: {df_hist['rodada'].nunique()} rodadas, "
+        f"{df_hist['atleta_id'].nunique()} atletas -> {hist_path}"
     )
 
-    abbr_to_id = build_abbr_to_clube_id(DATA_DIR, args.year)
-    log.info(f"Mapa abbr→clube_id construído com {len(abbr_to_id)} clubes")
+    if not collect_gato_data:
+        return result
 
     if not token:
         log.warning(
-            "GATOMESTRE_TOKEN não definido — partidas e odds de "
-            f"{args.year} não foram coletadas. Defina o token e rode novamente."
+            "CARTOLA_TOKEN nao definido - partidas e odds de "
+            f"{year} nao foram coletadas."
         )
-        return
+        return result
 
-    gato_api = GatoMestreAPI(token=token, temporada=args.year)
-    df_partidas, df_odds = importar_partidas_odds(gato_api, abbr_to_id, rodadas, args.year)
+    abbr_to_id = build_abbr_to_clube_id(DATA_DIR, year)
+    log.info(f"Mapa abbr->clube_id construido com {len(abbr_to_id)} clubes")
+
+    gato_api = GatoMestreAPI(token=token, temporada=year)
+    df_partidas, df_odds = importar_partidas_odds(gato_api, abbr_to_id, rounds, year)
 
     if not df_partidas.empty:
-        partidas_path = DATA_DIR / f"partidas_{args.year}.parquet"
+        partidas_path = DATA_DIR / f"partidas_{year}.parquet"
         df_partidas.to_parquet(partidas_path, index=False)
-        log.info(f"Partidas {args.year} salvas → {partidas_path}")
+        result.files["partidas"] = partidas_path
+        log.info(f"Partidas {year} salvas -> {partidas_path}")
 
     if not df_odds.empty:
-        odds_path = DATA_DIR / f"odds_{args.year}.parquet"
+        odds_path = DATA_DIR / f"odds_{year}.parquet"
         df_odds.to_parquet(odds_path, index=False)
-        log.info(f"Odds {args.year} salvas → {odds_path}")
+        result.files["odds"] = odds_path
+        log.info(f"Odds {year} salvas -> {odds_path}")
+
+    return result
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Importa dados de temporada anterior")
+    parser.add_argument("--year", type=int, nargs="+", default=[2025])
+    parser.add_argument("--rodadas", type=int, nargs="+", default=None)
+    parser.add_argument("--skip-gato", action="store_true")
+    args = parser.parse_args()
+
+    token = os.environ.get("CARTOLA_TOKEN")
+    for year in args.year:
+        import_historic_season(
+            year=year,
+            rodadas=args.rodadas,
+            token=token,
+            collect_gato_data=not args.skip_gato,
+        )
+    return
 
 
 if __name__ == "__main__":
