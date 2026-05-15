@@ -2,6 +2,7 @@ from pathlib import Path
 
 BASE_URL = "https://api.cartola.globo.com"
 GATOMESTRE_BASE = "https://api.gatomestre.globo.com"
+CBF_API = "https://www.cbf.com.br/api/cbf/"
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = PROJECT_ROOT / "data"
