@@ -14,7 +14,7 @@ from cartola_data.config import (
     FORMATION,
     POSICAO_NOME,
     STATUS,
-    TEC_ODDS_FILTER,
+    ODDS_FILTER,
 )
 from cartola_data.api import CartolaAPI
 from cartola_data.datasets import read_datasets
@@ -25,7 +25,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger(__name__)
 
 ODDS_COLS = ["prob_win", "prob_draw", "prob_loss"]
-TEC_POSITION_ID = 6
+POS_THRESHOLD = [1, 6]
 
 
 def train_model(df: pd.DataFrame, round_limit: int, season: int | None = None):
@@ -153,7 +153,7 @@ def merge_target_round_odds(
     return market_df
 
 
-def apply_tec_odds_filter(
+def apply_odds_filter(
     position_pool: pd.DataFrame,
     min_prob_win: float,
     max_prob_loss: float,
@@ -176,7 +176,7 @@ def build_team(
     market_df: pd.DataFrame,
     models_by_position: dict,
     formation: dict = FORMATION,
-    tec_odds_filter: dict | None = TEC_ODDS_FILTER,
+    odds_filter: dict | None = ODDS_FILTER,
 ) -> pd.DataFrame:
     df = market_df[market_df['status_id'] == STATUS["Provavel"]].copy()
     df["pontos_previstos"] = 0.0
@@ -198,11 +198,11 @@ def build_team(
 
     for position, n_players in formation.items():        
         position_pool = df[df["posicao_id"] == position].copy()
-        if position == TEC_POSITION_ID and tec_odds_filter:
-            position_pool = apply_tec_odds_filter(
+        if position in POS_THRESHOLD and odds_filter:
+            position_pool = apply_odds_filter(
                 position_pool=position_pool,
-                min_prob_win=tec_odds_filter["min_prob_win"],
-                max_prob_loss=tec_odds_filter["max_prob_loss"],
+                min_prob_win=odds_filter["min_prob_win"],
+                max_prob_loss=odds_filter["max_prob_loss"],
             )
         chosen = []
 
