@@ -206,12 +206,16 @@ def preparar_partidas(
                 "clube_id": casa,
                 "mando": 1,
                 "clube_adversario_id": fora,
+                "gols_feitos_clube": partida.get("placar_oficial_mandante"),
+                "gols_sofridos_clube": partida.get("placar_oficial_visitante"),
             }
             away = {
                 "rodada": rodada,
                 "clube_id": fora,
                 "mando": -1,
                 "clube_adversario_id": casa,
+                "gols_feitos_clube": partida.get("placar_oficial_visitante"),
+                "gols_sofridos_clube": partida.get("placar_oficial_mandante"),
             }
             if temporada is not None:
                 home["temporada"] = temporada
