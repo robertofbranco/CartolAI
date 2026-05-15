@@ -38,6 +38,7 @@ CARTOLA_RENAME = {
     "atletas.preco_num": "preco",
     "atletas.media_num": "media",
     "atletas.jogos_num": "jogos",
+    "atletas.entrou_em_campo": "entrou_em_campo",
 }
 
 RECOGNIZED_SCOUTS = {
@@ -118,7 +119,7 @@ def normalizar_rodada(df_raw: pd.DataFrame, year: int) -> pd.DataFrame:
         if col in normalized.columns:
             normalized[col] = pd.to_numeric(normalized[col], errors="coerce").astype(float)
 
-    jogou_col = "entrou em campo"
+    jogou_col = "entrou_em_campo"
     if jogou_col in df_raw.columns:
         normalized["jogou"] = (
             pd.to_numeric(df_raw[jogou_col], errors="coerce")
@@ -126,7 +127,7 @@ def normalizar_rodada(df_raw: pd.DataFrame, year: int) -> pd.DataFrame:
             .astype(bool)
         )
     else:
-        normalized["jogou"] = normalized["media"].fillna(0) != 0
+        normalized["jogou"] = normalized["pontos"].fillna(0) != 0
 
     return normalized.dropna(subset=["atleta_id", "rodada", "clube_id"])
 

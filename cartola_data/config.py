@@ -51,6 +51,14 @@ SCOUT_POINTS = {
     "V": 1.0,
 }
 
+STATUS = {
+    "Suspenso": 2,
+    "Contundido": 3,
+    "Duvida": 5,
+    "Nulo": 6,
+    "Provavel": 7
+}
+
 DEFAULT_LIGAS = [
     "1-mata-mata-brothers-do-graia-2026",
     "2o-mata-mata-brothers-do-graia",

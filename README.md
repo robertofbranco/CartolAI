@@ -31,6 +31,20 @@ pip install -r requirements.txt
 
 ## Uso
 
+### Coletar e unificar os dados
+```bash
+python collect_all_data.py
+```
+
+Esse comando executa o importador historico, o coletor da temporada atual e,
+ao final, cria arquivos consolidados como `data/jogadores_por_rodada.parquet`,
+`data/partidas.parquet` e `data/odds.parquet`.
+
+Para apenas reconstruir os arquivos consolidados a partir dos parquets anuais:
+```bash
+python collect_all_data.py --merge-only
+```
+
 ### Básico (rodada atual, sem autenticação)
 ```bash
 python cartola_team_builder.py
@@ -109,7 +123,7 @@ cartola_ml/
 1. Acesse [cartola.globo.com](https://cartola.globo.com) e faça login
 2. Abra o DevTools do navegador (F12) → aba **Network**
 3. Filtre por `api.cartola.globo.com`
-4. Copie o valor do header `X-GLB-Token` de qualquer request
+4. Copie o valor do header `Authorization` de qualquer request
 
 ---
 
