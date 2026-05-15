@@ -323,8 +323,16 @@ def rodar_backtest(
                 & (df_matches["rodada"] < rodada_alvo)
             )
         ].copy()
+
+        df_odds_training = df_odds.loc[
+            (df_odds["temporada"] < season)
+            | (
+                (df_odds["temporada"] == season)
+                & (df_odds["rodada"] < rodada_alvo)
+            )
+        ].copy()
         
-        df_feat = build_features(df_players_per_round_training, df_matches_training)
+        df_feat = build_features(df_players_per_round_training, df_matches_training, df_odds_training)
 
         try:
             model, feat_cols, mae = train_model(

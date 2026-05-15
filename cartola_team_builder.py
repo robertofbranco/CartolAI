@@ -164,7 +164,7 @@ def main():
     log.info(f"Histórico carregado: {df_players_per_round['rodada'].nunique()} rodadas, "
              f"{df_players_per_round['atleta_id'].nunique()} atletas únicos")
     
-    features = build_features(df_players_per_round, df_matches)
+    features = build_features(df_players_per_round, df_matches, df_odds)
 
     model, feature_cols, mae = train_model(features, 15)
 
