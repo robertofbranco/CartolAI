@@ -18,6 +18,7 @@ import logging
 import argparse
 import requests
 import pandas as pd
+from dataclasses import dataclass, field
 from dotenv import load_dotenv
 from tqdm import tqdm
 from pathlib import Path
@@ -51,12 +52,27 @@ BUDGET = 140.0
 
 SCOUT_POINTS = {
     "G": 8.0, "A": 5.0, "FT": 3.5, "FD": 1.2, "FF": 0.8,
-    "FS": 0.5, "PE": -0.3, "I": -0.1, "FC": -0.3, "GC": -3.0,
-    "CV": -3.0, "CA": -1.0, "SG": 5.0, "DD": 3.0, "GS": -1.0,
-    "DS": 1.2, "PP": -4.0, "DP": 7.0, "PC": 0.3, "RB": 1.5,
+    "FS": 0.5, "PS": 1, "PP": -4.0, "I": -0.1,
+    "DP": 7.0, "DE": 1.3, "SG": 5.0, "DS": 1.2,
+    "GC": -3.0, "CV": -3.0, "CA": -1.0, "GS": -1.0,
+    "FC": -0.3, "PC": 0.3, "V": 1
 }
 
 POSICAO_NOME = {1: "GOL", 2: "LAT", 3: "ZAG", 4: "MEI", 5: "ATA", 6: "TEC"}
+
+CAPTAIN_BONUS = 1.5
+
+DEFAULT_LIGAS = [
+    "1-mata-mata-brothers-do-graia-2026",
+    "2o-mata-mata-brothers-do-graia",
+]
+
+
+@dataclass
+class CurrentSeasonCollectionResult:
+    season: int
+    rounds: list[int]
+    files: dict[str, Path] = field(default_factory=dict)
 
 
 def safe_filename(name) -> str:
@@ -181,7 +197,11 @@ class GatoMestreAPI:
 # COLETA
 # ──────────────────────────────────────────────
 
-def get_players_data(api: CartolaAPI, rodadas_alvo: list[int]) -> pd.DataFrame:
+def get_players_data(
+    api: CartolaAPI,
+    rodadas_alvo: list[int],
+    temporada: int = CURRENT_SEASON,
+) -> pd.DataFrame:
     """
     Get players historical data per round.
     Returns a DataFrame with an row per (player, round).
@@ -220,6 +240,7 @@ def get_players_data(api: CartolaAPI, rodadas_alvo: list[int]) -> pd.DataFrame:
                 "media":      a.get("media_num", 0.0),
                 "jogos":      a.get("jogos_num", 0),
                 "jogou":      a.get("entrou_em_campo", False),
+                "temporada":  temporada,
                 **{f"scout_{k}": v for k, v in scout.items()},
             }
             registros.append(registro)
@@ -246,13 +267,17 @@ def get_current_market(api: CartolaAPI) -> pd.DataFrame:
         "status_id":   a.get("status_id"),
         "jogos":       a.get("jogos_num", 0),
     } for a in atletas]
-    return pd.DataFrame(rows)
+    
+    market_df = pd.DataFrame(rows)
+    
+    return market_df
 
 
 def get_odds(
     gato_api: GatoMestreAPI,
     clubes_raw: dict,
     rodadas_alvo: list[int],
+    temporada: int | None = None,
 ) -> pd.DataFrame:
     """
     Coleta probabilidades do Gato Mestre para cada rodada. Retorna DataFrame
@@ -292,52 +317,29 @@ def get_odds(
             win  = float(odds.get("win",  0)) / 100.0
             tie  = float(odds.get("tie",  0)) / 100.0
             loss = float(odds.get("loss", 0)) / 100.0
-            rows.append({
+            home_row = {
                 "rodada": rodada, "clube_id": home_id,
                 "prob_win": win, "prob_draw": tie, "prob_loss": loss,
-            })
-            rows.append({
+            }
+            away_row = {
                 "rodada": rodada, "clube_id": away_id,
                 "prob_win": loss, "prob_draw": tie, "prob_loss": win,
-            })
+            }
+            if temporada is not None:
+                home_row["temporada"] = temporada
+                away_row["temporada"] = temporada
+            rows.append(home_row)
+            rows.append(away_row)
         time.sleep(0.3)
 
     return pd.DataFrame(rows) if rows else pd.DataFrame()
 
 
-def carregar_dataset(
-    temporadas_extras: tuple[int, ...] = (2022, 2023, 2024, 2025),
-    temporada_atual: int = CURRENT_SEASON,
-    data_dir: Path = DATA_DIR,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """
-    Carrega histórico, partidas e odds da temporada atual e das passadas.
-    Toda linha sai com coluna `temporada` preenchida (a temporada atual recebe
-    a constante quando o parquet ainda não tem a coluna).
-
-    Retorna (df_hist, df_partidas, df_odds), todos podem ser DataFrame vazio.
-    """
-    def _load(path: Path, temporada: int) -> pd.DataFrame:
-        if not path.exists():
-            return pd.DataFrame()
-        df = pd.read_parquet(path)
-        if not df.empty and "temporada" not in df.columns:
-            df["temporada"] = temporada
-        return df
-
-    df_hist     = _load(data_dir / "historico.parquet",      temporada_atual)
-    df_partidas = _load(data_dir / "partidas.parquet",       temporada_atual)
-    df_odds     = _load(data_dir / "odds.parquet",           temporada_atual)
-
-    for year in temporadas_extras:
-        df_hist     = pd.concat([_load(data_dir / f"historico_{year}.parquet", year), df_hist], ignore_index=True)
-        df_partidas = pd.concat([_load(data_dir / f"partidas_{year}.parquet",  year), df_partidas], ignore_index=True)
-        df_odds     = pd.concat([_load(data_dir / f"odds_{year}.parquet",      year), df_odds], ignore_index=True)
-
-    return df_hist, df_partidas, df_odds
-
-
-def preparar_partidas(api: CartolaAPI, rodadas_alvo: list[int]) -> pd.DataFrame:
+def preparar_partidas(
+    api: CartolaAPI,
+    rodadas_alvo: list[int],
+    temporada: int | None = None,
+) -> pd.DataFrame:
     """Extrai mando de campo (casa=1, fora=-1) e adversário por (rodada, clube_id)."""
     registros = []
     for rodada in tqdm(rodadas_alvo, desc="Coletando partidas"):
@@ -346,8 +348,13 @@ def preparar_partidas(api: CartolaAPI, rodadas_alvo: list[int]) -> pd.DataFrame:
             for partida in data.get("partidas", []):
                 casa = partida.get("clube_casa_id")
                 fora = partida.get("clube_visitante_id")
-                registros.append({"rodada": rodada, "clube_id": casa, "mando":  1, "clube_adversario_id": fora})
-                registros.append({"rodada": rodada, "clube_id": fora, "mando": -1, "clube_adversario_id": casa})
+                casa_row = {"rodada": rodada, "clube_id": casa, "mando":  1, "clube_adversario_id": fora}
+                fora_row = {"rodada": rodada, "clube_id": fora, "mando": -1, "clube_adversario_id": casa}
+                if temporada is not None:
+                    casa_row["temporada"] = temporada
+                    fora_row["temporada"] = temporada
+                registros.append(casa_row)
+                registros.append(fora_row)
         except Exception as e:
             log.warning(f"Partidas rodada {rodada}: {e}")
         time.sleep(0.2)
@@ -378,6 +385,127 @@ def get_league_brackets(api: CartolaAPI, ligas: str) -> pd.DataFrame:
 
     return pd.DataFrame(chaves_ligas) if chaves_ligas else pd.DataFrame()
 
+def read_datasets():
+    players_per_round_file = DATA_DIR / f"jogadores_por_rodada.parquet"
+    if not players_per_round_file.exists():
+        raise FileNotFoundError(
+            f"{players_per_round_file} não encontrado. "
+            "Execute cartola_team_builder.py primeiro para coletar os dados."
+        )
+
+    df_players_per_round = pd.read_parquet(players_per_round_file)
+    
+    partidas_file = DATA_DIR / f"partidas.parquet"
+    if not partidas_file.exists():
+        raise FileNotFoundError(
+            f"{partidas_file} não encontrado. "
+            "Execute cartola_team_builder.py primeiro para coletar os dados."
+        )
+
+    df_matches = pd.read_parquet(partidas_file)
+
+    return df_players_per_round, df_matches
+
+
+def get_current_round(api: CartolaAPI) -> int:
+    status = api.market_status()
+    current_round = status.get("rodada_atual", status.get("rodada", {}).get("rodada_atual", 1))
+    log.info(f"Rodada atual: {current_round}")
+    return int(current_round)
+
+
+def missing_rounds(existing_df: pd.DataFrame, target_rounds: list[int]) -> list[int]:
+    if existing_df.empty or "rodada" not in existing_df.columns:
+        return target_rounds
+
+    collected_rounds = set(existing_df["rodada"].dropna().astype(int).unique())
+    return [round_number for round_number in target_rounds if round_number not in collected_rounds]
+
+
+def collect_current_season(
+    temporada: int = CURRENT_SEASON,
+    rodadas: list[int] | None = None,
+    token: str | None = None,
+    ligas: list[str] | None = None,
+) -> CurrentSeasonCollectionResult:
+    """Collect and persist all datasets that come from the live Cartola APIs."""
+    api = CartolaAPI(token=token)
+    current_round = get_current_round(api)
+    target_rounds = rodadas or list(range(1, current_round))
+    result = CurrentSeasonCollectionResult(season=temporada, rounds=target_rounds)
+
+    if not target_rounds:
+        log.error("Nenhuma rodada para coletar (temporada ainda na rodada 1).")
+        return result
+
+    players_file = DATA_DIR / f"jogadores_por_rodada_{temporada}.parquet"
+    if players_file.exists():
+        df_players_per_round = pd.read_parquet(players_file)
+        rounds_to_collect = missing_rounds(df_players_per_round, target_rounds)
+        if rounds_to_collect:
+            log.info(f"Coletando {len(rounds_to_collect)} rodadas novas...")
+            new_df = get_players_data(api, rounds_to_collect, temporada=temporada)
+            df_players_per_round = pd.concat([df_players_per_round, new_df], ignore_index=True)
+        else:
+            log.info("Dados de jogadores por rodada ja atualizados, nada a coletar.")
+    else:
+        df_players_per_round = get_players_data(api, target_rounds, temporada=temporada)
+
+    df_players_per_round.to_parquet(players_file, index=False)
+    result.files["jogadores_por_rodada"] = players_file
+    log.info(
+        f"Dados de jogadores por rodada salvos: {df_players_per_round['rodada'].nunique()} rodadas, "
+        f"{df_players_per_round['atleta_id'].nunique()} atletas -> {players_file}"
+    )
+
+    df_partidas = preparar_partidas(api, target_rounds, temporada=temporada)
+    if not df_partidas.empty:
+        partidas_file = DATA_DIR / f"partidas_{temporada}.parquet"
+        df_partidas.to_parquet(partidas_file, index=False)
+        result.files["partidas"] = partidas_file
+        log.info(f"Partidas salvas -> {partidas_file}")
+
+    df_current_market = get_current_market(api)
+    if not df_current_market.empty:
+        market_file = DATA_DIR / "mercado_atual.parquet"
+        df_current_market.to_parquet(market_file, index=False)
+        result.files["mercado_atual"] = market_file
+        log.info(f"Mercado atual salvo: {len(df_current_market)} atletas -> {market_file}")
+
+    if token:
+        gato_api = GatoMestreAPI(token=token, temporada=temporada)
+        rounds_for_odds = sorted(set(target_rounds + [current_round]))
+        df_odds = get_odds(gato_api, api.clubes(), rounds_for_odds, temporada=temporada)
+        if not df_odds.empty:
+            odds_file = DATA_DIR / f"odds_{temporada}.parquet"
+            df_odds.to_parquet(odds_file, index=False)
+            result.files["odds"] = odds_file
+            log.info(f"Odds salvas: {df_odds['rodada'].nunique()} rodadas -> {odds_file}")
+    else:
+        log.info("CARTOLA_TOKEN nao definido - odds nao coletadas.")
+
+    df_medias_cartoleiros = get_cartola_users_mean(api, target_rounds)
+    if not df_medias_cartoleiros.empty:
+        medias_file = DATA_DIR / "medias_cartoleiros.parquet"
+        df_medias_cartoleiros.to_parquet(medias_file, index=False)
+        result.files["medias_cartoleiros"] = medias_file
+        log.info(
+            f"Medias dos cartoleiros salvas: {df_medias_cartoleiros['rodada'].nunique()} "
+            f"rodadas -> {medias_file}"
+        )
+
+    df_chaves_ligas = get_league_brackets(api, ligas or DEFAULT_LIGAS)
+    if not df_chaves_ligas.empty:
+        chaves_file = DATA_DIR / "chaves_ligas.parquet"
+        df_chaves_ligas.to_parquet(chaves_file, index=False)
+        result.files["chaves_ligas"] = chaves_file
+        log.info(
+            f"Chaves das ligas salvas: {df_chaves_ligas['rodada'].nunique()} rodadas e "
+            f"{len(df_chaves_ligas)} chaves -> {chaves_file}"
+        )
+
+    return result
+
 
 # ──────────────────────────────────────────────
 # EXECUÇÃO
@@ -387,82 +515,16 @@ def main():
     parser = argparse.ArgumentParser(description="Cartola FC — Data Collector")
     parser.add_argument("--rodadas", type=int, nargs="+",   default=None,
                         help="Rodadas a coletar (padrão: todas até a rodada atual)")
-    parser.add_argument("--temporada", type=int, nargs="+",   default=CURRENT_SEASON,
-                        help="Temporada a coletar (padrão: temporada atual)")
+
     args = parser.parse_args()
-    token = os.environ.get("CARTOLA_TOKEN")    
+    token = os.environ.get("CARTOLA_TOKEN")
 
-    api = CartolaAPI(token=token)
-
-    status = api.market_status()
-    current_round = status.get("rodada_atual", status.get("rodada", {}).get("rodada_atual", 1))
-    log.info(f"Rodada atual: {current_round}")
-
-    target_rounds = args.rodadas or list(range(1, current_round))
-    if not target_rounds:
-        log.error("Nenhuma rodada para coletar (temporada ainda na rodada 1).")
-        return
-
-    # ── Players data per round ──
-    players_per_round_file = DATA_DIR / f"jogadores_por_rodada_{args.temporada}.parquet"
-    if players_per_round_file.exists():
-        df_players_per_round = pd.read_parquet(players_per_round_file)
-        missing_rounds = [r for r in target_rounds if r not in df_players_per_round["rodada"].unique()]
-        if missing_rounds:
-            log.info(f"Coletando {len(missing_rounds)} rodadas novas...")
-            new_df = get_players_data(api, missing_rounds)
-            df_players_per_round = pd.concat([df_players_per_round, new_df], ignore_index=True)
-        else:
-            log.info("Dados de jogadores por rodada já atualizado, nada a coletar.")
-    else:
-        df_players_per_round = get_players_data(api, target_rounds)
-
-    df_players_per_round.to_parquet(players_per_round_file, index=False)
-    log.info(f"Dados de jogadores por rodada salvo: {df_players_per_round['rodada'].nunique()} rodadas, "
-             f"{df_players_per_round['atleta_id'].nunique()} atletas → {players_per_round_file}")
-    
-    
-    # ── Partidas ──
-    df_partidas = preparar_partidas(api, target_rounds)
-    if not df_partidas.empty:
-        partidas_file = DATA_DIR / f"partidas_{args.temporada}.parquet"
-        df_partidas.to_parquet(partidas_file, index=False)
-        log.info(f"Partidas salvas → {partidas_file}")
-
-    # ── Current market (price, mean, status_id, matches) ──
-    df_current_market = get_current_market(api)
-    if not df_current_market.empty:
-        market_file = DATA_DIR / "mercado_atual.parquet"
-        df_current_market.to_parquet(market_file, index=False)
-        log.info(f"Mercado atual salvo: {len(df_current_market)} atletas → {market_file}")
-
-    # ── Odds (Gato Mestre) ──
-    if token:
-        gato_api = GatoMestreAPI(token=token, temporada=args.temporada)
-        # Inclui a rodada_atual (próxima a ser jogada) para uso na inferência ao vivo
-        rodadas_para_odds = target_rounds + [current_round]
-        df_odds = get_odds(gato_api, api.clubes(), sorted(set(rodadas_para_odds)))
-        if not df_odds.empty:
-            odds_file = DATA_DIR / f"odds_{args.temporada}.parquet"
-            df_odds.to_parquet(odds_file, index=False)
-            log.info(f"Odds salvas: {df_odds['rodada'].nunique()} rodadas → {odds_file}")
-    else:
-        log.info("GATOMESTRE_TOKEN não definido — odds não coletadas.")
-
-    # ──Cartola users average ──
-    df_medias_cartoleiros = get_cartola_users_mean(api, target_rounds)
-    if not df_medias_cartoleiros.empty:
-        medias_cartoleiros_file = DATA_DIR / "medias_cartoleiros.parquet"
-        df_medias_cartoleiros.to_parquet(medias_cartoleiros_file, index=False)
-        log.info(f"Medias dos cartoleiros salvas: {df_medias_cartoleiros['rodada'].nunique()} rodadas → {medias_cartoleiros_file}")
-
-    # ── League brackets ──
-    LIGAS = ["1-mata-mata-brothers-do-graia-2026", "2o-mata-mata-brothers-do-graia"]
-    df_chaves_ligas = get_league_brackets(api, LIGAS)
-    if not df_chaves_ligas.empty:
-        chaves_ligas_file = DATA_DIR / "chaves_ligas.parquet"
-        df_chaves_ligas.to_parquet(chaves_ligas_file, index=False)
-        log.info(f"Chaves das ligas salvas: {df_chaves_ligas['rodada'].nunique()} rodadas e {len(df_chaves_ligas)} chaves → {chaves_ligas_file}")
+    collect_current_season(
+        temporada=CURRENT_SEASON,
+        rodadas=args.rodadas,
+        token=token,
+    )
+    return
 
 
 if __name__ == "__main__":
