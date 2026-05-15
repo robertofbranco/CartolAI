@@ -21,6 +21,11 @@ FORMATION = {
     6: 1,  # TEC
 }
 
+TEC_ODDS_FILTER = {
+    "min_prob_win": 0.20,
+    "max_prob_loss": 0.40,
+}
+
 POSICAO_NOME = {
     1: "GOL",
     2: "LAT",

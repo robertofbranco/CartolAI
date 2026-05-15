@@ -30,6 +30,8 @@ from dataclasses import dataclass, field
 
 from cartola_team_builder import (
     build_team,
+    merge_target_round_odds,
+    ODDS_COLS,
     POSICAO_NOME,
     FORMATION,
     feature_cols_from_models,
@@ -170,20 +172,15 @@ def latest_features_before_round(
 ) -> pd.DataFrame:
     """Return the latest available pre-round feature row for each athlete."""
     columns = ["atleta_id"] + [col for col in feature_cols if col not in market_columns]
-
-    if "temporada" not in df_feat.columns:
-        previous_features = df_feat[df_feat["rodada"] < rodada_alvo].copy()
-        sort_columns = ["rodada"]
-    else:
-        previous_features = df_feat.loc[
-            (df_feat["temporada"] < season)
-            | (
-                (df_feat["temporada"] == season)
-                & (df_feat["rodada"] < rodada_alvo)
-            )
-        ].copy()
-        previous_features["season_sort"] = (previous_features["temporada"] == season).astype(int)
-        sort_columns = ["season_sort", "temporada", "rodada"]
+    previous_features = df_feat.loc[
+        (df_feat["temporada"] < season)
+        | (
+            (df_feat["temporada"] == season)
+            & (df_feat["rodada"] < rodada_alvo)
+        )
+    ].copy()
+    previous_features["season_sort"] = (previous_features["temporada"] == season).astype(int)
+    sort_columns = ["season_sort", "temporada", "rodada"]
 
     if previous_features.empty:
         return pd.DataFrame(columns=columns)
@@ -194,6 +191,108 @@ def latest_features_before_round(
         [columns]
         .drop_duplicates("atleta_id", keep="last")
     )
+
+
+def simulated_market_features_for_round(
+    df_players_per_round: pd.DataFrame,
+    df_matches: pd.DataFrame,
+    df_odds: pd.DataFrame,
+    df_market: pd.DataFrame,
+    season: int,
+    rodada_alvo: int,
+) -> pd.DataFrame:
+    """
+    Build the target-round market with features available at lock time.
+
+    The target rows are appended to the pre-round history before feature
+    engineering, so lagged player/club features include the immediately
+    previous round. Target-round result columns are nulled to avoid using
+    post-round points/scouts as model inputs.
+    """
+    history_players = df_players_per_round.loc[
+        (df_players_per_round["temporada"] < season)
+        | (
+            (df_players_per_round["temporada"] == season)
+            & (df_players_per_round["rodada"] < rodada_alvo)
+        )
+    ].copy()
+
+    target_market = df_market.copy()
+    target_market["temporada"] = season
+    target_market["rodada"] = rodada_alvo
+
+    result_cols = ["pontos", "jogou", "entrou_em_campo"] + [
+        col for col in target_market.columns if col.startswith("scout_")
+    ]
+    for col in result_cols:
+        if col in target_market.columns:
+            target_market[col] = pd.NA
+
+    players_context = pd.concat(
+        [history_players, target_market],
+        ignore_index=True,
+        sort=False,
+    )
+
+    matches_context = df_matches.loc[
+        (df_matches["temporada"] < season)
+        | (
+            (df_matches["temporada"] == season)
+            & (df_matches["rodada"] <= rodada_alvo)
+        )
+    ].copy()
+    target_match_mask = (
+        (matches_context["temporada"] == season)
+        & (matches_context["rodada"] == rodada_alvo)
+    )
+    for col in ["gols_feitos_clube", "gols_sofridos_clube"]:
+        if col in matches_context.columns:
+            matches_context.loc[target_match_mask, col] = pd.NA
+
+    odds_context = df_odds.loc[
+        (df_odds["temporada"] < season)
+        | (
+            (df_odds["temporada"] == season)
+            & (df_odds["rodada"] <= rodada_alvo)
+        )
+    ].copy()
+
+    market_features = build_features(players_context, matches_context, odds_context)
+    market_features = market_features.loc[
+        (market_features["temporada"] == season)
+        & (market_features["rodada"] == rodada_alvo)
+    ].copy()
+
+    market_features = merge_target_round_odds(
+        market_features,
+        df_odds,
+        season,
+        rodada_alvo,
+    )
+
+    if set(ODDS_COLS).issubset(market_features.columns):
+        missing_odds = market_features[ODDS_COLS].isna().any(axis=1)
+        if missing_odds.any():
+            missing_clubs = sorted(
+                market_features.loc[missing_odds, "clube_id"]
+                .dropna()
+                .astype(int)
+                .unique()
+                .tolist()
+            )
+            log.warning(
+                "Rodada %s: odds ausentes para %s atletas em clubes %s; "
+                "usando fallback neutro.",
+                rodada_alvo,
+                int(missing_odds.sum()),
+                missing_clubs,
+            )
+            market_features.loc[missing_odds, ODDS_COLS] = market_features.loc[
+                missing_odds,
+                ODDS_COLS,
+            ].fillna(1 / 3)
+
+    return market_features
 
 
 def latest_market_values_before_round(
@@ -411,15 +510,17 @@ def rodar_backtest(
             log.warning(f"Rodada {rodada_alvo}: sem dados reais, pulando.")
             continue
 
-        # Enriquecer com a ultima feature disponivel antes da rodada alvo.
-        ultima_feat = latest_features_before_round(
-            df_feat=df_feat,
+        # Simulate the market row available at lock time: player market data
+        # from the target round plus lagged features through the previous round
+        # and target-round fixture/odds context.
+        df_mercado_sim = simulated_market_features_for_round(
+            df_players_per_round=df_players_per_round,
+            df_matches=df_matches,
+            df_odds=df_odds,
+            df_market=df_rodada_real,
             season=season,
             rodada_alvo=rodada_alvo,
-            feature_cols=feat_cols,
-            market_columns=df_rodada_real.columns,
         )
-        df_mercado_sim = df_rodada_real.merge(ultima_feat, on="atleta_id", how="left")
 
         for col in feat_cols:
             if col in df_mercado_sim.columns:
