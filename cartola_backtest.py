@@ -279,7 +279,7 @@ def rodar_backtest(
       2. Usa o mercado daquela rodada para montar o time
       3. Compara com os pontos REAIS da rodada (que o modelo nunca viu)
     """
-    df_players_per_round, df_matches = read_datasets()
+    df_players_per_round, df_matches, df_odds = read_datasets()
 
     resultados = []
 

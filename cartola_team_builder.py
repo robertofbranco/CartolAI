@@ -159,7 +159,7 @@ def prepare_market_data(df_feat: pd.DataFrame, rodada_alvo: int) -> pd.DataFrame
 
 
 def main():
-    df_players_per_round, df_matches = read_datasets()
+    df_players_per_round, df_matches, df_odds = read_datasets()
 
     log.info(f"Histórico carregado: {df_players_per_round['rodada'].nunique()} rodadas, "
              f"{df_players_per_round['atleta_id'].nunique()} atletas únicos")
