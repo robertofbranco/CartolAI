@@ -45,7 +45,7 @@ def build_features(
 
     features_df["pts_ultima_rodada"] = features_df.groupby("atleta_id")["pontos"].shift(1)
 
-    for col in ["scout_G", "scout_A", "scout_SG", "scout_GS", "scout_DE"]:
+    for col in [feat for feat in FEATURE_COLS if feat.startswith('scout')]:
         if col in features_df.columns:
             features_df[f"{col}_5r"] = (
                 features_df.groupby("atleta_id")[col]

@@ -24,7 +24,7 @@ def train_model(df: pd.DataFrame, round_limit: int, season: int | None = None):
     Returns (model, feature_cols, mae).
 
     When `season` is provided and the dataset has a `temporada` column, all
-    previous seasons are used for training. The validation fold is the five
+    previous seasons are used for training. The validation fold is the 3
     rounds immediately before `round_limit` in the target season.
     """
     feat_cols = [c for c in FEATURE_COLS if c in df.columns]

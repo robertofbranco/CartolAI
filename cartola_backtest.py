@@ -66,6 +66,64 @@ class ResultadoRodada:
     eficiencia: float                    # pts_modelo / pts_teto  (0–1)
     budget_usado: float                  # cartoletas gastas
     time_escalado: pd.DataFrame = field(repr=False)
+    mae_por_posicao: dict[str, float] = field(default_factory=dict)
+
+
+def build_clubes_lookup(df_players_per_round: pd.DataFrame) -> dict:
+    """Return clube_id -> best available club name, preferring full names."""
+    if not {"clube_id", "clube_nome"}.issubset(df_players_per_round.columns):
+        return {}
+
+    clubes_df = df_players_per_round.dropna(subset=["clube_id", "clube_nome"])
+    clubes_lookup = {}
+
+    for clube_id, clube_rows in clubes_df.groupby("clube_id"):
+        nomes = [
+            str(nome).strip()
+            for nome in clube_rows["clube_nome"].dropna().unique()
+            if str(nome).strip()
+        ]
+        if not nomes:
+            continue
+
+        clubes_lookup[clube_id] = max(nomes, key=len)
+
+    return clubes_lookup
+
+
+def load_medias_cartoleiros() -> pd.DataFrame:
+    """Load Cartola users' average score by round, when available."""
+    medias_file = DATA_DIR / "medias_cartoleiros.parquet"
+    columns = ["rodada", "media_cartoleiros"]
+    if not medias_file.exists():
+        log.warning(f"Arquivo nao encontrado: {medias_file}")
+        return pd.DataFrame(columns=columns)
+
+    try:
+        medias_df = pd.read_parquet(medias_file)
+    except Exception as exc:
+        log.warning(f"Falha ao carregar {medias_file}: {exc}")
+        return pd.DataFrame(columns=columns)
+
+    if not set(columns).issubset(medias_df.columns):
+        log.warning(f"{medias_file} nao contem as colunas esperadas: {columns}")
+        return pd.DataFrame(columns=columns)
+
+    return (
+        medias_df[columns]
+        .dropna(subset=["rodada", "media_cartoleiros"])
+        .drop_duplicates("rodada")
+        .sort_values("rodada")
+    )
+
+
+def mae_por_posicao_from_models(models_by_position: dict) -> dict[str, float]:
+    """Return validation MAE by position name from trained position models."""
+    mae_por_posicao = {}
+    for posicao_id, model_info in models_by_position.items():
+        posicao = POSICAO_NOME.get(int(posicao_id), str(posicao_id))
+        mae_por_posicao[posicao] = float(model_info["mae"])
+    return mae_por_posicao
 
 
 # ──────────────────────────────────────────────
@@ -285,13 +343,9 @@ def rodar_backtest(
 
     resultados = []
 
-    # Lookup: clube_id -> nome (do histórico, que já mapeia ambos)
-    clubes_lookup = (
-        df_players_per_round.dropna(subset=["clube_id", "clube_nome"])
-        .drop_duplicates("clube_id")
-        .set_index("clube_id")["clube_nome"]
-        .to_dict()
-    )
+    # Lookup: clube_id -> nome (prefere nome completo quando o historico tambem
+    # tem abreviacoes como FLA/PAL/VAS para temporadas mais recentes).
+    clubes_lookup = build_clubes_lookup(df_players_per_round)
 
     # Lookup: (rodada, clube_id) -> clube_adversario_id. Coluna pode não existir em
     # parquets antigos — quando ausente, o adversário cai para "?" no log.
@@ -347,6 +401,7 @@ def rodar_backtest(
             continue
         feat_cols = feature_cols_from_models(models_by_pos)
         mae = mean_mae_from_models(models_by_pos)
+        mae_por_posicao = mae_por_posicao_from_models(models_by_pos)
 
         # Simular mercado: snapshot dos jogadores na rodada alvo
         # (usamos os dados daquela rodada como proxy de mercado)
@@ -386,6 +441,12 @@ def rodar_backtest(
 
         # Anotar posição (string), adversário e pontos reais no lineup para o log/CSV
         time_modelo["posicao"] = time_modelo["posicao_id"].map(POSICAO_NOME)
+        time_modelo["clube"] = (
+            time_modelo["clube_id"]
+            .map(clubes_lookup)
+            .fillna(time_modelo.get("clube_nome", ""))
+            .fillna("?")
+        )
         time_modelo["adversario"] = (
             time_modelo["clube_id"]
             .map(
@@ -401,7 +462,7 @@ def rodar_backtest(
         log.info(f"Time escalado R{rodada_alvo}:")
         for _, p in time_modelo.iterrows():
             apelido = (p["apelido"] or "")[:20]
-            clube = (p.get("clube_nome") or "")[:16]
+            clube = (p.get("clube") or "")[:16]
             adv = (p["adversario"] or "")[:16]
             log.info(
                 f"  {p['posicao']:<3} {apelido:<20} {clube:<16} vs {adv:<16} "
@@ -422,6 +483,7 @@ def rodar_backtest(
             eficiencia=eficiencia,
             budget_usado=time_modelo["preco"].sum(),
             time_escalado=time_modelo,
+            mae_por_posicao=mae_por_posicao,
         )
         resultados.append(resultado)
         log.info(
@@ -448,6 +510,16 @@ def gerar_relatorio(resultados: list[ResultadoRodada], output_dir: Path = RESULT
         "budget_usado":      r.budget_usado
     } for r in resultados])
 
+    mae_posicao_df = pd.DataFrame([
+        {
+            "rodada": r.rodada,
+            "posicao": posicao,
+            "mae_predicao": mae_posicao,
+        }
+        for r in resultados
+        for posicao, mae_posicao in r.mae_por_posicao.items()
+    ])
+
     # ── Sumário no terminal ──
     print("\n" + "="*70)
     print(f"{'BACKTEST SUMMARY':^70}")
@@ -464,17 +536,87 @@ def gerar_relatorio(resultados: list[ResultadoRodada], output_dir: Path = RESULT
     print("="*70)
 
     # ── Gráficos ──
-    fig = plt.figure(figsize=(15, 10))
+    fig = plt.figure(figsize=(16, 12))
     fig.suptitle("Cartola FC — Backtesting Report", fontsize=14, fontweight="bold")
-    gs = gridspec.GridSpec(2, 3, figure=fig, hspace=0.4, wspace=0.35)
+    gs = gridspec.GridSpec(
+        3,
+        3,
+        figure=fig,
+        height_ratios=[1.4, 1.4, 1.0],
+        hspace=0.5,
+        wspace=0.35,
+    )
 
     rodadas = df["rodada"].values
+    medias_cartoleiros = load_medias_cartoleiros()
+    medias_cartoleiros_plot = df[["rodada"]].merge(
+        medias_cartoleiros,
+        on="rodada",
+        how="left",
+    ).dropna(subset=["media_cartoleiros"])
 
     # 1. Pontuação por rodada
-    ax1 = fig.add_subplot(gs[0, :2])
-    ax1.plot(rodadas, df["pts_teto"],     "--", color="gold",   label="Teto (oracle)", alpha=0.7)
-    ax1.plot(rodadas, df["pts_modelo"],   "-o", color="#2196F3", label="Modelo ML",  linewidth=2)
+    ax1 = fig.add_subplot(gs[:2, :2])
+    ax1.plot(
+        rodadas,
+        df["pts_teto"],
+        "--o",
+        color="gold",
+        label="Teto (oracle)",
+        alpha=0.75,
+        linewidth=2,
+        markersize=5,
+    )
+    ax1.plot(
+        rodadas,
+        df["pts_modelo"],
+        "-o",
+        color="#2196F3",
+        label="Modelo ML",
+        linewidth=2,
+        markersize=5,
+    )
+    if not medias_cartoleiros_plot.empty:
+        ax1.plot(
+            medias_cartoleiros_plot["rodada"],
+            medias_cartoleiros_plot["media_cartoleiros"],
+            "-o",
+            color="#2E7D32",
+            label="Média Cartoleiros",
+            linewidth=2,
+            markersize=5,
+            alpha=0.9,
+        )
+    for rodada, pts_teto, pts_modelo in zip(rodadas, df["pts_teto"], df["pts_modelo"]):
+        ax1.annotate(
+            f"{pts_teto:.1f}",
+            (rodada, pts_teto),
+            textcoords="offset points",
+            xytext=(0, 8),
+            ha="center",
+            fontsize=8,
+            color="#8A6D00",
+        )
+        ax1.annotate(
+            f"{pts_modelo:.1f}",
+            (rodada, pts_modelo),
+            textcoords="offset points",
+            xytext=(0, -14),
+            ha="center",
+            fontsize=8,
+            color="#0D47A1",
+        )
     ax1.set_title("Pontuação Real por Rodada")
+    for _, row in medias_cartoleiros_plot.iterrows():
+        ax1.annotate(
+            f"{row['media_cartoleiros']:.1f}",
+            (row["rodada"], row["media_cartoleiros"]),
+            textcoords="offset points",
+            xytext=(0, 8),
+            ha="center",
+            fontsize=8,
+            color="#1B5E20",
+        )
     ax1.set_xlabel("Rodada")
     ax1.set_ylabel("Pontos")
     ax1.legend(fontsize=8)
@@ -503,12 +645,87 @@ def gerar_relatorio(resultados: list[ResultadoRodada], output_dir: Path = RESULT
     ax4.legend(fontsize=8)
     ax4.grid(True, alpha=0.3)
 
+    # 5. MAE por posicao
+    ax5 = fig.add_subplot(gs[2, :])
+    if not mae_posicao_df.empty:
+        posicao_order = list(POSICAO_NOME.values())
+        for posicao in posicao_order:
+            position_mae = mae_posicao_df[mae_posicao_df["posicao"] == posicao]
+            if position_mae.empty:
+                continue
+            ax5.plot(
+                position_mae["rodada"],
+                position_mae["mae_predicao"],
+                "-o",
+                label=posicao,
+                linewidth=1.8,
+                markersize=4,
+            )
+        ax5.set_title("MAE por Posição")
+        ax5.set_xlabel("Rodada")
+        ax5.set_ylabel("MAE (pontos)")
+        ax5.legend(fontsize=8, ncol=min(6, max(1, mae_posicao_df["posicao"].nunique())))
+        ax5.grid(True, alpha=0.3)
+    else:
+        ax5.set_axis_off()
+
     plt.savefig(output_dir / "backtest_report.png", dpi=150, bbox_inches="tight")
     log.info(f"Gráfico salvo em {output_dir / 'backtest_report.png'}")
 
     # ── Salvar CSV ──
     df.to_csv(output_dir / "backtest_resultados.csv", index=False)
     log.info(f"Resultados salvos em {output_dir / 'backtest_resultados.csv'}")
+
+    mae_posicao_path = output_dir / "backtest_mae_por_posicao.csv"
+    mae_posicao_df.to_csv(mae_posicao_path, index=False)
+    log.info(f"MAE por posição salvo em {mae_posicao_path}")
+
+    selected_players_rows = []
+    for resultado in resultados:
+        time_escalado = resultado.time_escalado.copy()
+        if time_escalado.empty:
+            continue
+
+        time_escalado["rodada"] = resultado.rodada
+        if "clube" not in time_escalado.columns:
+            time_escalado["clube"] = time_escalado.get("clube_nome", "")
+        time_escalado["clube adversario"] = time_escalado.get("adversario", "")
+        time_escalado["pontos"] = time_escalado.get("pontos_real", 0.0)
+
+        selected_players_rows.append(time_escalado)
+
+    selected_players_columns = [
+        "rodada",
+        "atleta_id",
+        "apelido",
+        "posicao",
+        "clube",
+        "clube adversario",
+        "mando",
+        "pontos",
+        "pontos_previstos",
+    ]
+    if selected_players_rows:
+        selected_players_df = pd.concat(selected_players_rows, ignore_index=True)
+        selected_players_df = selected_players_df.sort_values(
+            ["rodada", "posicao_id"],
+            ascending=[True, True],
+        )
+        for column in selected_players_columns:
+            if column not in selected_players_df.columns:
+                selected_players_df[column] = ""
+        selected_players_df = selected_players_df[selected_players_columns]
+    else:
+        selected_players_df = pd.DataFrame(columns=selected_players_columns)
+
+    selected_players_df["mando"] = selected_players_df["mando"].map({
+        1: "CASA",
+        -1: "FORA",
+    })
+
+    selected_players_path = output_dir / "backtest_time_escalado.csv"
+    selected_players_df.to_csv(selected_players_path, index=False)
+    log.info(f"Time escalado salvo em {selected_players_path}")
 
     return df
 
