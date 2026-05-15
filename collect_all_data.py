@@ -17,8 +17,9 @@ from pathlib import Path
 import pandas as pd
 from dotenv import load_dotenv
 
-from cartola_collector import CURRENT_SEASON, DATA_DIR, collect_current_season
-from import_historic_data import import_historic_season
+from cartola_data import CURRENT_SEASON, DATA_DIR, collect_current_season
+from cartola_data.historic import import_historic_season
+from cartola_data.transforms import deduplicate_by_key
 
 load_dotenv()
 
@@ -27,6 +28,11 @@ log = logging.getLogger(__name__)
 
 YEARLY_PARQUET_RE = re.compile(r"^(?P<dataset>.+)_(?P<year>\d{4})\.parquet$")
 DEFAULT_HISTORIC_YEARS = list(range(2023, CURRENT_SEASON))
+MERGE_KEYS = {
+    "jogadores_por_rodada": ["temporada", "rodada", "atleta_id"],
+    "partidas": ["temporada", "rodada", "clube_id"],
+    "odds": ["temporada", "rodada", "clube_id"],
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -71,6 +77,18 @@ def sort_for_readability(df: pd.DataFrame) -> pd.DataFrame:
     return df.sort_values(sort_columns).reset_index(drop=True)
 
 
+def deduplicate_merged_dataset(dataset: str, df: pd.DataFrame) -> pd.DataFrame:
+    key_columns = MERGE_KEYS.get(dataset)
+    if not key_columns or any(column not in df.columns for column in key_columns):
+        return df
+
+    return deduplicate_by_key(
+        df,
+        key_columns,
+        prefer_played=dataset == "jogadores_por_rodada",
+    )
+
+
 def find_yearly_parquets(
     data_dir: Path,
     dataset_names: list[str] | None = None,
@@ -109,7 +127,10 @@ def merge_partitioned_parquets(
         if not frames:
             continue
 
-        merged_df = sort_for_readability(pd.concat(frames, ignore_index=True))
+        merged_df = pd.concat(frames, ignore_index=True)
+        before_dedupe = len(merged_df)
+        merged_df = deduplicate_merged_dataset(dataset, merged_df)
+        merged_df = sort_for_readability(merged_df)
         output_path = data_dir / f"{dataset}.parquet"
         merged_df.to_parquet(output_path, index=False)
         merged_files[dataset] = output_path
@@ -119,6 +140,8 @@ def merge_partitioned_parquets(
             output_path,
             len(merged_df),
         )
+        if len(merged_df) != before_dedupe:
+            log.info("Removed %s duplicate rows from %s", before_dedupe - len(merged_df), dataset)
 
     return merged_files
 
@@ -130,7 +153,7 @@ def run_collectors(args: argparse.Namespace) -> None:
         for year in args.historic_years:
             import_historic_season(
                 year=year,
-                rodadas=args.historic_rodadas,
+                rounds=args.historic_rodadas,
                 token=token,
                 collect_gato_data=not args.skip_gato,
             )
