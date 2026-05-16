@@ -378,7 +378,8 @@ def collect_current_season(
             players_file,
         )
 
-    matches = preparar_partidas(api, target_rounds, temporada=temporada)
+    matches_rounds = sorted(set(target_rounds + [current_round]))
+    matches = preparar_partidas(api, matches_rounds, temporada=temporada)
     _save_yearly_dataset(matches, DATA_DIR / f"partidas_{temporada}.parquet", result, "partidas")
 
     market = get_current_market(api)
@@ -389,9 +390,8 @@ def collect_current_season(
         log.info("Mercado atual salvo: %s atletas -> %s", len(market), market_file)
 
     if token:
-        gato_api = GatoMestreAPI(token=token, temporada=temporada)
-        odds_rounds = sorted(set(target_rounds + [current_round]))
-        odds = get_odds(gato_api, api.clubes(), odds_rounds, temporada=temporada)
+        gato_api = GatoMestreAPI(token=token, temporada=temporada)        
+        odds = get_odds(gato_api, api.clubes(), matches_rounds, temporada=temporada)
         _save_yearly_dataset(odds, DATA_DIR / f"odds_{temporada}.parquet", result, "odds")
     else:
         log.info("CARTOLA_TOKEN nao definido - odds nao coletadas.")
