@@ -9,6 +9,8 @@ from sklearn.metrics import mean_absolute_error
 from feature_engineering import FEATURE_COLS, build_features
 
 from cartola_data.config import (
+    CAPTAIN_BONUS,
+    CAPTAIN_POS,
     CURRENT_SEASON,
     DATA_DIR,
     FORMATION,
@@ -25,8 +27,20 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger(__name__)
 
 ODDS_COLS = ["prob_win", "prob_draw", "prob_loss"]
-POS_THRESHOLD = [1, 3, 6]
+POS_THRESHOLD = [1, 2, 3, 4, 5, 6]
 TEC_POSITION_ID = 6
+CAPTAIN_COL = "capitao"
+LINEUP_OUTPUT_COLUMNS = [
+    "rodada",
+    "atleta_id",
+    "apelido",
+    "posicao",
+    "clube",
+    "clube adversario",
+    "mando",
+    "pontos_previstos",    
+    "capitao",
+]
 
 
 def train_model(df: pd.DataFrame, round_limit: int, season: int | None = None):
@@ -154,6 +168,54 @@ def merge_target_round_odds(
     return market_df
 
 
+def merge_target_round_match_context(
+    market_df: pd.DataFrame,
+    matches_df: pd.DataFrame | None,
+    season: int,
+    rodada_alvo: int,
+    clubes_lookup: dict[int, str] | None = None,
+) -> pd.DataFrame:
+    """Attach target-round home/away and opponent information."""
+    market_df = market_df.copy()
+    if matches_df is None or matches_df.empty:
+        return market_df
+
+    match_cols = ["temporada", "rodada", "clube_id", "mando", "clube_adversario_id"]
+    if not set(match_cols).issubset(matches_df.columns):
+        return market_df
+
+    match_context = (
+        matches_df.loc[
+            (matches_df["temporada"] == season)
+            & (matches_df["rodada"] == rodada_alvo),
+            match_cols,
+        ]
+        .drop_duplicates(["temporada", "rodada", "clube_id"])
+        .copy()
+    )
+    if match_context.empty:
+        return market_df
+
+    for col in ["mando", "clube_adversario_id", "adversario"]:
+        if col in market_df.columns:
+            market_df = market_df.drop(columns=col)
+
+    market_df = market_df.merge(
+        match_context,
+        on=["temporada", "rodada", "clube_id"],
+        how="left",
+    )
+
+    if clubes_lookup:
+        market_df["adversario"] = (
+            market_df["clube_adversario_id"]
+            .map(clubes_lookup)
+            .fillna("")
+        )
+
+    return market_df
+
+
 def apply_odds_filter(
     position_pool: pd.DataFrame,
     min_prob_win: float,
@@ -198,6 +260,116 @@ def _played_lookup(team_df: pd.DataFrame, play_status_df: pd.DataFrame | None = 
     )
 
 
+def assign_captain(
+    team_df: pd.DataFrame,
+    score_column: str = "pontos_previstos",
+    captain_positions: list[int] | tuple[int, ...] | None = CAPTAIN_POS,
+) -> pd.DataFrame:
+    """Mark one non-reserve player as captain using the best available score."""
+    team_df = team_df.copy()
+    if team_df.empty:
+        team_df[CAPTAIN_COL] = pd.Series(dtype=bool)
+        return team_df
+
+    team_df[CAPTAIN_COL] = False
+
+    if "reserva" in team_df.columns:
+        starter_mask = ~team_df["reserva"].fillna(False).astype(bool)
+    else:
+        starter_mask = pd.Series(True, index=team_df.index)
+
+    eligible_mask = starter_mask.copy()
+    if captain_positions and "posicao_id" in team_df.columns:
+        eligible_mask &= team_df["posicao_id"].isin(captain_positions)
+
+    candidates = team_df[eligible_mask]
+    if candidates.empty:
+        candidates = team_df[starter_mask]
+    if candidates.empty:
+        candidates = team_df
+
+    if score_column in candidates.columns:
+        scores = pd.to_numeric(candidates[score_column], errors="coerce").fillna(float("-inf"))
+    else:
+        scores = pd.Series(0.0, index=candidates.index)
+
+    captain_index = scores.idxmax()
+    team_df.loc[captain_index, CAPTAIN_COL] = True
+
+    return team_df
+
+
+def score_with_captain_bonus(
+    team_df: pd.DataFrame,
+    points_column: str = "pontos",
+    captain_bonus: float = CAPTAIN_BONUS,
+) -> float:
+    """Return team points after applying the captain multiplier."""
+    if team_df.empty or points_column not in team_df.columns:
+        return 0.0
+
+    points = pd.to_numeric(team_df[points_column], errors="coerce").fillna(0.0)
+    if CAPTAIN_COL in team_df.columns:
+        captain_mask = team_df[CAPTAIN_COL].fillna(False).astype(bool)
+    else:
+        captain_mask = pd.Series(False, index=team_df.index)
+
+    multipliers = pd.Series(1.0, index=team_df.index)
+    multipliers.loc[captain_mask] = captain_bonus
+
+    return float((points * multipliers).sum())
+
+
+def lineup_output_table(time_df: pd.DataFrame) -> pd.DataFrame:
+    """Return lineup information using the same columns as backtest_time_escalado.csv."""
+    output_df = time_df.copy()
+
+    if "posicao" not in output_df.columns:
+        output_df["posicao"] = output_df.get("posicao_id", pd.Series(dtype=object)).map(POSICAO_NOME)
+
+    if "clube" not in output_df.columns:
+        if "clube_nome" in output_df.columns:
+            output_df["clube"] = output_df["clube_nome"]
+        else:
+            output_df["clube"] = ""
+
+    if "clube adversario" not in output_df.columns:
+        output_df["clube adversario"] = output_df.get("adversario", "")
+
+    has_points_column = "pontos" in output_df.columns
+    if not has_points_column:
+        output_df["pontos"] = output_df.get("pontos_real", "")
+    if "pontos_com_bonus" not in output_df.columns:
+        if "pontos_real" in output_df.columns:
+            points_source = "pontos_real"
+        elif has_points_column:
+            points_source = "pontos"
+        else:
+            points_source = None
+
+        if points_source is not None:
+            points = pd.to_numeric(output_df[points_source], errors="coerce").fillna(0.0)
+            output_df["pontos_com_bonus"] = points
+            if CAPTAIN_COL in output_df.columns:
+                captain_mask = output_df[CAPTAIN_COL].fillna(False).astype(bool)
+                output_df.loc[captain_mask, "pontos_com_bonus"] = (
+                    points.loc[captain_mask] * CAPTAIN_BONUS
+                )
+        else:
+            output_df["pontos_com_bonus"] = ""
+
+    for column in LINEUP_OUTPUT_COLUMNS:
+        if column not in output_df.columns:
+            output_df[column] = ""
+
+    output_df["mando"] = output_df["mando"].map({
+        1: "CASA",
+        -1: "FORA",
+    }).fillna(output_df["mando"])
+
+    return output_df[LINEUP_OUTPUT_COLUMNS]
+
+
 def apply_reserve_substitutions(
     team_df: pd.DataFrame,
     play_status_df: pd.DataFrame | None = None,
@@ -214,6 +386,8 @@ def apply_reserve_substitutions(
     team_df = team_df.copy()
     if "reserva" not in team_df.columns:
         team_df["reserva"] = False
+    if CAPTAIN_COL not in team_df.columns:
+        team_df[CAPTAIN_COL] = False
 
     played_by_athlete = _played_lookup(team_df, play_status_df)
     starters = team_df[~team_df["reserva"].fillna(False).astype(bool)].copy()
@@ -235,6 +409,8 @@ def apply_reserve_substitutions(
                         starter.get("jogou", pd.NA),
                     )
                     if _did_not_play(played_value):
+                        if bool(starter.get(CAPTAIN_COL, False)):
+                            reserve[CAPTAIN_COL] = True
                         reserve["substituiu_atleta_id"] = starter["atleta_id"]
                         reserve["substituiu_apelido"] = starter.get("apelido", "")
                         replacement_row = reserve
@@ -315,6 +491,7 @@ def build_team(
 
     team_df = pd.DataFrame(selected_players)
     team_df = team_df.sort_values(["posicao_id", "pontos_previstos"], ascending=[True, False])
+    team_df = assign_captain(team_df, score_column="pontos_previstos")
 
     if include_reserves:
         return team_df.reset_index(drop=True)
@@ -329,22 +506,17 @@ def build_team(
 # ──────────────────────────────────────────────
 
 def imprimir_time(time_df: pd.DataFrame):
-    total_pred  = time_df["pontos_previstos"].sum()
-    total_preco = time_df["preco"].sum()
+    total_pred = score_with_captain_bonus(time_df, points_column="pontos_previstos")
+    total_preco = time_df["preco"].sum() if "preco" in time_df.columns else 0.0
+    output_df = lineup_output_table(time_df)
 
-    print("\n" + "="*60)
-    print(f"{'CARTOLA FC - TIME':^60}")
-    print("="*60)
-    print(f"{'Pos':<6} {'Apelido':<22} {'Clube':<18} {'Preço':>6} {'Pts Prev':>8}")
-    print("-"*60)
-    for _, row in time_df.iterrows():
-        pos      = POSICAO_NOME.get(row["posicao_id"], "?")       
-        print(f"{pos:<6} {row['apelido'][:20]:<22} "
-              f"{row['clube_nome'][:16]:<18} "
-              f"{row['preco']:>6.1f} {row['pontos_previstos']:>8.2f}")
-    print("-"*60)
-    print(f"{'TOTAL':<50} {total_preco:>6.1f} {total_pred:>8.2f}")
-    print("="*60)
+    print("\n" + "="*140)
+    print(f"{'CARTOLA FC - TIME':^140}")
+    print("="*140)
+    print(output_df.to_string(index=False))
+    print("-"*140)
+    print(f"Budget usado: {total_preco:.1f} | Pts previstos com capitao: {total_pred:.2f}")
+    print("="*140)
 
 
 def prepare_market_data(
@@ -352,6 +524,7 @@ def prepare_market_data(
     rodada_alvo: int,
     season: int = CURRENT_SEASON,
     df_odds: pd.DataFrame | None = None,
+    df_matches: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     market_file = DATA_DIR / "mercado_atual.parquet"
     market_df = pd.read_parquet(market_file)
@@ -389,6 +562,14 @@ def prepare_market_data(
                 market_df.groupby("posicao_id")[col].transform("median")
             ).fillna(0)
 
+    market_df = merge_target_round_match_context(
+        market_df,
+        df_matches,
+        season,
+        rodada_alvo,
+        clubes_map,
+    )
+
     market_df = merge_target_round_odds(market_df, df_odds, season, rodada_alvo)
     for col in ODDS_COLS:
         if col in market_df.columns:
@@ -415,7 +596,12 @@ def main():
     mae = mean_mae_from_models(models_by_pos)
     log.info(f"MAE médio por posição: {mae:.3f} pts | Features: {len(feature_cols)}")
 
-    market_data = prepare_market_data(features, rodada_alvo, df_odds=df_odds)
+    market_data = prepare_market_data(
+        features,
+        rodada_alvo,
+        df_odds=df_odds,
+        df_matches=df_matches,
+    )
 
     team = build_team(market_data, models_by_pos)
 
