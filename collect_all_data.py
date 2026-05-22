@@ -18,6 +18,8 @@ import pandas as pd
 from dotenv import load_dotenv
 
 from cartola_data import CURRENT_SEASON, DATA_DIR, collect_current_season
+from cartola_data.api import CartolaAPI
+from cartola_data.current import get_current_round, get_players_data_from_cartola_api, missing_rounds
 from cartola_data.historic import get_players_data_from_caRtola, import_historic_season
 from cartola_data.transforms import deduplicate_by_key
 
@@ -108,6 +110,66 @@ def find_yearly_parquets(
 
     return groups
 
+def get_players_data(api, current_round: int, season: int) -> bool:
+    target_rounds = list(range(1, current_round))
+    players_file = DATA_DIR / f"jogadores_por_rodada_{season}.parquet"
+    if players_file.exists():
+        players = pd.read_parquet(players_file)
+    else:
+        players = pd.DataFrame()
+
+    rounds_to_collect = missing_rounds(players, target_rounds)
+    if rounds_to_collect:
+        new_players = get_players_data_from_caRtola(season, rounds_to_collect)
+        collected_frames = []
+        archived_rounds: set[int] = set()
+        if not new_players.empty:
+            collected_frames.append(new_players)
+            archived_rounds = set(new_players["rodada"].dropna().astype(int).unique())
+
+        api_rounds = [
+            round_number
+            for round_number in rounds_to_collect
+            if round_number not in archived_rounds
+        ]
+        if api_rounds:
+            log.info("Coletando %s rodadas novas pela API do cartola.", len(api_rounds))
+            api_players = get_players_data_from_cartola_api(api, api_rounds, temporada=season)
+            if not api_players.empty:
+                collected_frames.append(api_players)
+
+        new_players = (
+            pd.concat(collected_frames, ignore_index=True)
+            if collected_frames
+            else pd.DataFrame()
+        )
+        if new_players.empty:
+            raise RuntimeError(
+                f"Nenhum dado de jogadores coletado para {season}; "
+                f"rodadas solicitadas: {rounds_to_collect}"
+            )
+
+        players = pd.concat([players, new_players], ignore_index=True)
+        log.info(
+                "Historico %s salvo: %s rodadas, %s atletas -> %s",
+                season,
+                players["rodada"].nunique(),
+                players["atleta_id"].nunique(),
+                players_file,
+            )
+    
+    if not players.empty:
+        players = deduplicate_by_key(
+            players,
+            ["temporada", "rodada", "atleta_id"],
+            prefer_played=True,
+        )
+    else:
+        raise RuntimeError(f"Nenhum dado de jogadores disponivel para {season}.")
+
+    players.to_parquet(players_file, index=False)
+    return True
+            
 
 def merge_partitioned_parquets(
     data_dir: Path = DATA_DIR,
@@ -158,21 +220,14 @@ def run_collectors(args: argparse.Namespace) -> None:
             )
 
     if not args.skip_current:
-        players = get_players_data_from_caRtola(args.current_season)
-        if not players.empty:
-            players_path = DATA_DIR / f"jogadores_por_rodada_{args.current_season}.parquet"
-            players.to_parquet(players_path, index=False)            
-            log.info(
-                "Historico %s salvo: %s rodadas, %s atletas -> %s",
-                args.current_season,
-                players["rodada"].nunique(),
-                players["atleta_id"].nunique(),
-                players_path,
-            )
-
+        api = CartolaAPI(token=token)
+        current_round = get_current_round(api)
+        get_players_data(api, current_round, args.current_season)
         collect_current_season(
+            api=api,
+            current_round=current_round,
             temporada=args.current_season,            
-            token=token,
+            token=token,            
         )
 
 
