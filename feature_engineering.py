@@ -7,11 +7,13 @@ FEATURE_COLS = [
     #"clube_enc", 
     #"preco_lag1",
     "media_pts_5r", "media_pts_3r", "media_pts_10r",
+    "avg_pts_casa_5r", "avg_pts_fora_5r",
     "std_pts_5r", "std_pts_3r",
-    "regularidade_5r", #"pts_ultima_rodada",
+    "regularidade_5r", "pts_ultima_rodada",
     "mando",
     "scout_G_5r", "scout_A_5r", "scout_SG_5r",
-    "scout_GS_5r", "scout_DE_5r",
+    "scout_GS_5r", "scout_DE_5r", "scout_FD_5r",
+    "scout_FF_5r", "scout_FT_5r",
     "prob_win", "prob_draw", "prob_loss",
     "gols_feitos_clube_5r", "gols_sofridos_clube_5r",
     "gols_feitos_adv_5r", "gols_sofridos_adv_5r",
@@ -19,6 +21,52 @@ FEATURE_COLS = [
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
+
+
+def _add_home_away_points_averages(
+    features_df: pd.DataFrame,
+    temporal_group_cols: list[str],
+    window: int = 5,
+) -> pd.DataFrame:
+    """
+    Add each player's prior home/away point averages.
+
+    For every row, both columns describe what was known before that round:
+    the average of the player's previous `window` home matches and previous
+    `window` away matches.
+    """
+    features_df = features_df.copy()
+    casa_col = f"avg_pts_casa_{window}r"
+    fora_col = f"avg_pts_fora_{window}r"
+    features_df[casa_col] = float("nan")
+    features_df[fora_col] = float("nan")
+
+    for _, group in features_df.groupby(temporal_group_cols, sort=False):
+        home_points = []
+        away_points = []
+
+        for index, row in group.sort_values("rodada").iterrows():
+            if home_points:
+                features_df.at[index, casa_col] = sum(home_points[-window:]) / min(
+                    len(home_points),
+                    window,
+                )
+            if away_points:
+                features_df.at[index, fora_col] = sum(away_points[-window:]) / min(
+                    len(away_points),
+                    window,
+                )
+
+            points = row.get("pontos")
+            if pd.isna(points):
+                continue
+
+            if row.get("mando") == 1:
+                home_points.append(float(points))
+            elif row.get("mando") == -1:
+                away_points.append(float(points))
+
+    return features_df
 
 
 def build_features(
@@ -38,6 +86,16 @@ def build_features(
     sort_cols = temporal_group_cols + ["rodada"]
     features_df = features_df.sort_values(sort_cols).copy()
 
+    match_keys = ["temporada", "rodada", "clube_id"]
+    if "mando" in features_df.columns:
+        features_df = features_df.drop(columns="mando")
+    features_df = features_df.merge(
+        partidas_df[match_keys + ["mando"]].drop_duplicates(match_keys),
+        on=match_keys,
+        how="left",
+    )
+    features_df["mando"] = features_df["mando"].fillna(0)
+
     for window in [3, 5, 10]:
         features_df[f"media_pts_{window}r"] = (
             features_df.groupby(temporal_group_cols)["pontos"]
@@ -48,9 +106,11 @@ def build_features(
             .transform(lambda x: x.shift(1).rolling(window, min_periods=1).std().fillna(0))
         )
 
+    features_df = _add_home_away_points_averages(features_df, temporal_group_cols)
+
     features_df["pts_ultima_rodada"] = features_df.groupby(temporal_group_cols)["pontos"].shift(1)
 
-    for col in ["scout_G", "scout_A", "scout_SG", "scout_GS", "scout_DE"]:
+    for col in ["scout_G", "scout_A", "scout_SG", "scout_GS", "scout_DE", "scout_FD", "scout_FF", "scout_FT"]:
         if col in features_df.columns:
             round_col = f"{col}_round"
 
@@ -76,14 +136,6 @@ def build_features(
 
     features_df["preco_lag1"] = features_df.groupby(temporal_group_cols)["preco"].shift(1)
     
-    match_keys = ["temporada", "rodada", "clube_id"]
-    features_df = features_df.merge(
-        partidas_df[match_keys + ["mando"]].drop_duplicates(match_keys),
-        on=match_keys,
-        how="left",
-    )
-    features_df["mando"] = features_df["mando"].fillna(0)
-
     club_match_goal_cols = ["gols_feitos_clube", "gols_sofridos_clube"]
     club_group_cols = ["temporada", "clube_id"]
     club_goals_df = (
@@ -144,9 +196,12 @@ def build_features(
                 how="left",
             )
 
-    features_df[["prob_win", "prob_draw", "prob_loss"]] = (
-        features_df[["prob_win", "prob_draw", "prob_loss"]]
-        .fillna({"prob_win": 1/3, "prob_draw": 1/3, "prob_loss": 1/3})
+    for col in odds_cols:
+        if col not in features_df.columns:
+            features_df[col] = float("nan")
+
+    features_df[odds_cols] = features_df[odds_cols].fillna(
+        {"prob_win": 1 / 3, "prob_draw": 1 / 3, "prob_loss": 1 / 3}
     )
     
     #features_df["clube_enc"] = LabelEncoder().fit_transform(features_df["clube_id"].astype(str))
