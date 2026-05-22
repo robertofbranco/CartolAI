@@ -335,15 +335,14 @@ def _save_yearly_dataset(
 
 
 def collect_current_season(
+    api: CartolaAPI,
+    current_round: int,
     temporada: int = CURRENT_SEASON,
-    rodadas: list[int] | None = None,
     token: str | None = None,
     ligas: list[str] | None = None,
 ) -> CurrentSeasonCollectionResult:
     """Collect live Cartola/Gato Mestre data and persist project datasets."""
-    api = CartolaAPI(token=token)
-    current_round = get_current_round(api)
-    target_rounds = rodadas or list(range(1, current_round))
+    target_rounds = list(range(1, current_round))
     result = CurrentSeasonCollectionResult(season=temporada, rounds=target_rounds)
 
     if not target_rounds:
