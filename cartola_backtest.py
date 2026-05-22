@@ -29,19 +29,25 @@ from pathlib import Path
 from dataclasses import dataclass, field
 
 from cartola_team_builder import (
-    CAPTAIN_COL,    
     assign_captain,
     apply_reserve_substitutions,
     build_team,
     lineup_output_table,
     merge_target_round_odds,
-    ODDS_COLS,
-    POSICAO_NOME,
-    FORMATION,
     feature_cols_from_models,
     mean_mae_from_models,
     score_with_captain_bonus,
     train_models_by_position,
+    ODDS_COLS,
+    CAPTAIN_COL
+)
+
+from cartola_data.config import (
+    CAPTAIN_BONUS,    
+    DATA_DIR,
+    FORMATION,
+    POSICAO_NOME,    
+    TUNING
 )
 
 CSV_PLAYERS_COLUMNS = [
@@ -58,7 +64,6 @@ CSV_PLAYERS_COLUMNS = [
     "capitao",
     "reserva",
     "substituiu_apelido"
-    "substituiu_atleta_id",    
 ]
 
 
@@ -449,7 +454,9 @@ def rodar_backtest(
     rodada_inicio: int,
     rodada_fim: int,
     formation: dict = FORMATION,
-    season: int = 2026
+    season: int = 2026,
+    tuning: dict = TUNING,
+    output_folder: str | Path | None = RESULTS_DIR,
 ) -> list[ResultadoRodada]:
     """
     Para cada rodada no intervalo [rodada_inicio, rodada_fim]:
@@ -457,6 +464,10 @@ def rodar_backtest(
       2. Usa o mercado daquela rodada para montar o time
       3. Compara com os pontos REAIS da rodada (que o modelo nunca viu)
     """
+    output_dir = Path(output_folder) if output_folder is not None else None
+    if output_dir is not None:
+        output_dir.mkdir(parents=True, exist_ok=True)
+
     df_players_per_round, df_matches, df_odds = read_datasets()
 
     resultados = []
@@ -513,6 +524,7 @@ def rodar_backtest(
                 df_feat,
                 round_limit=rodada_alvo,
                 season=season,
+                tuning=tuning
             )
         except ValueError as e:
             log.warning(f"Rodada {rodada_alvo}: {e}")
@@ -625,6 +637,12 @@ def rodar_backtest(
             f"Teto: {pts_teto:.1f} | Eficiência: {eficiencia:.1%} | MAE: {mae:.2f}"
         )
 
+    if output_dir is not None:
+        if resultados:
+            gerar_relatorio(resultados, output_dir=output_dir)
+        else:
+            log.warning(f"Nenhum resultado gerado; relatorio nao foi salvo em {output_dir}.")
+
     return resultados
 
 
@@ -632,8 +650,11 @@ def rodar_backtest(
 # RELATÓRIO
 # ──────────────────────────────────────────────
 
-def gerar_relatorio(resultados: list[ResultadoRodada], output_dir: Path = RESULTS_DIR):
+def gerar_relatorio(resultados: list[ResultadoRodada], output_dir: str | Path = RESULTS_DIR):
     """Gera DataFrame resumo + gráficos do backtesting."""
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     df = pd.DataFrame([{
         "rodada":            r.rodada,
@@ -854,21 +875,25 @@ def main():
     parser = argparse.ArgumentParser(description="Cartola FC — Backtesting Engine")
     parser.add_argument("--inicio",  type=int, default=10,    help="Primeira rodada a testar (mín. 6)")
     parser.add_argument("--fim",     type=int, default=15,   help="Última rodada a testar")
+    parser.add_argument(
+        "--output-folder",
+        type=Path,
+        default=RESULTS_DIR,
+        help="Pasta onde salvar os arquivos gerados pelo backtest",
+    )
     #parser.add_argument("--budget",  type=float, default=140.0)
     args = parser.parse_args()    
 
     # Rodar backtest
     resultados = rodar_backtest(
         rodada_inicio=args.inicio,
-        rodada_fim=args.fim
+        rodada_fim=args.fim,
+        output_folder=args.output_folder,
     )
 
     if not resultados:
         log.error("Nenhum resultado gerado. Verifique os dados históricos.")
         return
-
-    # Relatório
-    gerar_relatorio(resultados)
 
 
 if __name__ == "__main__":

@@ -15,9 +15,12 @@ from cartola_data.config import (
     DATA_DIR,
     FORMATION,
     POSICAO_NOME,
+    RISK_TUNING,
     STATUS,
     ODDS_FILTER,
+    TUNING,
 )
+
 from cartola_data.api import CartolaAPI
 from cartola_data.datasets import read_datasets
 
@@ -38,12 +41,17 @@ LINEUP_OUTPUT_COLUMNS = [
     "clube",
     "clube adversario",
     "mando",
+    "pontos",
+    "pontos_com_bonus",
     "pontos_previstos",    
+    "reserva",
     "capitao",
+    "substituiu_atleta_id",
+    "substituiu_apelido",
 ]
 
 
-def train_model(df: pd.DataFrame, round_limit: int, season: int | None = None):
+def train_model(df: pd.DataFrame, round_limit: int, season: int | None = None, tuning = TUNING):
     """
     Train RandomForest with time validation.
     Returns (model, feature_cols, mae).
@@ -85,11 +93,13 @@ def train_model(df: pd.DataFrame, round_limit: int, season: int | None = None):
     X_val,   y_val   = test_df[feat_cols].fillna(0),     test_df["pontos"]
 
     model = RandomForestRegressor(
-        n_estimators=300,
-        max_depth=12,
-        min_samples_leaf=5,
-        random_state=42,
-        n_jobs=-1
+        n_estimators=tuning["n_estimators"],
+        max_depth=tuning["max_depth"],
+        min_samples_leaf=tuning["min_samples_leaf"],
+        random_state=tuning["random_state"],
+        min_samples_split=tuning["min_samples_split"],
+        max_features=tuning["max_features"],
+        n_jobs=tuning["n_jobs"]
     )
 
     model.fit(X_train, y_train)
@@ -99,11 +109,11 @@ def train_model(df: pd.DataFrame, round_limit: int, season: int | None = None):
     return model, feat_cols, mae
 
 
-def train_models_by_position(df: pd.DataFrame, round_limit: int, season: int | None = None):
+def train_models_by_position(df: pd.DataFrame, round_limit: int, season: int | None = None, tuning = TUNING):
     models = {}
 
     for posicao_id, df_pos in df.groupby("posicao_id"):
-        model, feat_cols, mae = train_model(df_pos, round_limit, season)
+        model, feat_cols, mae = train_model(df_pos, round_limit, season, tuning)
         models[int(posicao_id)] = {
             "model": model,
             "feature_cols": feat_cols,
@@ -337,8 +347,17 @@ def lineup_output_table(time_df: pd.DataFrame) -> pd.DataFrame:
         output_df["clube adversario"] = output_df.get("adversario", "")
 
     has_points_column = "pontos" in output_df.columns
-    if not has_points_column:
-        output_df["pontos"] = output_df.get("pontos_real", "")
+    if "pontos_real" in output_df.columns:
+        if has_points_column:
+            output_df["pontos"] = output_df["pontos"].where(
+                output_df["pontos"].notna(),
+                output_df["pontos_real"],
+            )
+        else:
+            output_df["pontos"] = output_df["pontos_real"]
+            has_points_column = True
+    elif not has_points_column:
+        output_df["pontos"] = ""
     if "pontos_com_bonus" not in output_df.columns:
         if "pontos_real" in output_df.columns:
             points_source = "pontos_real"
@@ -591,6 +610,7 @@ def main():
         features,
         round_limit=rodada_alvo,
         season=CURRENT_SEASON,
+        tuning=RISK_TUNING
     )
     feature_cols = feature_cols_from_models(models_by_pos)
     mae = mean_mae_from_models(models_by_pos)

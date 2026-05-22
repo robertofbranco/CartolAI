@@ -71,3 +71,23 @@ DEFAULT_LIGAS = [
     "1-mata-mata-brothers-do-graia-2026",
     "2o-mata-mata-brothers-do-graia",
 ]
+
+TUNING = {
+    "n_estimators": 300,
+    "max_depth": 8,
+    "min_samples_leaf": 20,
+    "random_state": 42,
+    "min_samples_split": 2,
+    "max_features": 0.7,
+    "n_jobs": -1,
+}
+
+RISK_TUNING = {
+    "n_estimators": 300,
+    "max_depth": 8,
+    "min_samples_leaf": 10,
+    "random_state": 42,
+    "min_samples_split": 2,
+    "max_features": "sqrt",
+    "n_jobs": -1,
+}
