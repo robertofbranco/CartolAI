@@ -24,7 +24,7 @@ from .current import (
     get_current_round,
     get_league_brackets,
     get_odds,
-    get_players_data,
+    get_players_data_from_cartola_api,
     missing_rounds,
     preparar_partidas,
 )
@@ -56,7 +56,7 @@ __all__ = [
     "get_current_round",
     "get_league_brackets",
     "get_odds",
-    "get_players_data",
+    "get_players_data_from_cartola_api",
     "missing_rounds",
     "preparar_partidas",
     "read_datasets",
