@@ -41,7 +41,7 @@ def _iter_atletas(atletas: dict | list) -> list[tuple[int | None, dict]]:
     return [(atleta.get("atleta_id"), atleta) for atleta in atletas]
 
 
-def get_players_data(
+def get_players_data_from_cartola_api(
     api: CartolaAPI,
     rodadas_alvo: list[int],
     temporada: int = CURRENT_SEASON,
@@ -349,34 +349,6 @@ def collect_current_season(
     if not target_rounds:
         log.error("Nenhuma rodada para coletar.")
         return result
-
-    players_file = DATA_DIR / f"jogadores_por_rodada_{temporada}.parquet"
-    if players_file.exists():
-        players = pd.read_parquet(players_file)
-        rounds_to_collect = missing_rounds(players, target_rounds)
-        if rounds_to_collect:
-            log.info("Coletando %s rodadas novas.", len(rounds_to_collect))
-            new_players = get_players_data(api, rounds_to_collect, temporada=temporada)
-            players = pd.concat([players, new_players], ignore_index=True)
-        else:
-            log.info("Jogadores por rodada ja estao atualizados.")
-    else:
-        players = get_players_data(api, target_rounds, temporada=temporada)
-
-    if not players.empty:
-        players = deduplicate_by_key(
-            players,
-            ["temporada", "rodada", "atleta_id"],
-            prefer_played=True,
-        )
-                
-        _save_yearly_dataset(players, players_file, result, "jogadores_por_rodada")
-        log.info(
-            "Jogadores por rodada salvos: %s rodadas, %s atletas -> %s",
-            players["rodada"].nunique(),
-            players["atleta_id"].nunique(),
-            players_file,
-        )
 
     matches_rounds = sorted(set(target_rounds + [current_round]))
     matches = preparar_partidas(api, matches_rounds, temporada=temporada)
