@@ -133,6 +133,7 @@ class TeamBuilderReservesTest(unittest.TestCase):
                     "clube_nome": "Clube A",
                     "adversario": "Clube B",
                     "mando": 1,
+                    "pontos": pd.NA,
                     "pontos_real": 10.0,
                     "pontos_previstos": 8.0,
                     "reserva": False,
@@ -163,6 +164,7 @@ class TeamBuilderReservesTest(unittest.TestCase):
             ],
         )
         self.assertEqual(output.loc[0, "mando"], "CASA")
+        self.assertEqual(output.loc[0, "pontos"], 10.0)
         self.assertEqual(output.loc[0, "pontos_com_bonus"], 10.0 * CAPTAIN_BONUS)
 
     def test_merge_target_round_match_context_fills_opponent_name(self):
