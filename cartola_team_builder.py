@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_absolute_error
 
+from cartola_data.current import get_current_round
 from feature_engineering import FEATURE_COLS, build_features
 
 from cartola_data.config import (
@@ -40,14 +41,10 @@ LINEUP_OUTPUT_COLUMNS = [
     "posicao",
     "clube",
     "clube adversario",
-    "mando",
-    "pontos",
-    "pontos_com_bonus",
-    "pontos_previstos",    
-    "reserva",
+    "mando",    
+    "pontos_previstos",
     "capitao",
-    "substituiu_atleta_id",
-    "substituiu_apelido",
+    #"reserva",    
 ]
 
 
@@ -598,10 +595,11 @@ def prepare_market_data(
 
 
 def main():
-    rodada_alvo = 16
+    api = CartolaAPI()
+    rodada_alvo = get_current_round(api)
     df_players_per_round, df_matches, df_odds = read_datasets()
 
-    log.info(f"Histórico carregado: {df_players_per_round['rodada'].nunique()} rodadas, "
+    log.info(f"Histórico carregado: {df_players_per_round['temporada'].nunique()} temporadas, "
              f"{df_players_per_round['atleta_id'].nunique()} atletas únicos")
     
     features = build_features(df_players_per_round, df_matches, df_odds)
@@ -610,7 +608,7 @@ def main():
         features,
         round_limit=rodada_alvo,
         season=CURRENT_SEASON,
-        tuning=RISK_TUNING
+        tuning=TUNING
     )
     feature_cols = feature_cols_from_models(models_by_pos)
     mae = mean_mae_from_models(models_by_pos)
