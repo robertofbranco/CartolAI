@@ -33,6 +33,7 @@ log = logging.getLogger(__name__)
 ODDS_COLS = ["prob_win", "prob_draw", "prob_loss"]
 POS_THRESHOLD = [1, 2, 3, 4, 5, 6]
 TEC_POSITION_ID = 6
+LUXURY_RESERVE_POSITIONS = (4, 5)
 CAPTAIN_COL = "capitao"
 LINEUP_OUTPUT_COLUMNS = [
     "rodada",
@@ -41,10 +42,10 @@ LINEUP_OUTPUT_COLUMNS = [
     "posicao",
     "clube",
     "clube adversario",
-    "mando",    
+    "mando",
     "pontos_previstos",
+    "reserva",
     "capitao",
-    #"reserva",    
 ]
 
 
@@ -242,29 +243,67 @@ def apply_odds_filter(
     return eligible
 
 
-def _did_not_play(value) -> bool:
-    """Return True only when a played flag is explicitly false."""
-    if pd.isna(value):
-        return False
-
-    if isinstance(value, str):
-        return value.strip().lower() in {"false", "0", "nao", "n"}
-
-    return value is False or value == 0
-
-
-def _played_lookup(team_df: pd.DataFrame, play_status_df: pd.DataFrame | None = None) -> dict:
-    status_source = play_status_df if play_status_df is not None else team_df
-    if not {"atleta_id", "jogou"}.issubset(status_source.columns):
+def _points_lookup(
+    team_df: pd.DataFrame,
+    play_status_df: pd.DataFrame | None = None,
+    points_column: str = "pontos",
+) -> dict:
+    score_source = play_status_df if play_status_df is not None else team_df
+    if not {"atleta_id", points_column}.issubset(score_source.columns):
         return {}
 
     return (
-        status_source[["atleta_id", "jogou"]]
+        score_source[["atleta_id", points_column]]
         .dropna(subset=["atleta_id"])
         .drop_duplicates("atleta_id", keep="last")
-        .set_index("atleta_id")["jogou"]
+        .set_index("atleta_id")[points_column]
         .to_dict()
     )
+
+
+def _player_score(
+    player: pd.Series,
+    points_by_athlete: dict,
+    points_column: str = "pontos",
+) -> float:
+    value = points_by_athlete.get(player.get("atleta_id"), player.get(points_column, pd.NA))
+    if pd.isna(value) and points_column != "pontos_previstos":
+        value = player.get("pontos_previstos", pd.NA)
+
+    value = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    if pd.isna(value):
+        return float("-inf")
+
+    return float(value)
+
+
+def _price_values(players: pd.DataFrame) -> pd.Series:
+    if "preco" not in players.columns:
+        return pd.Series(float("inf"), index=players.index)
+
+    return pd.to_numeric(players["preco"], errors="coerce").fillna(float("inf"))
+
+
+def _luxury_reserve_candidate(
+    position_pool: pd.DataFrame,
+    n_players: int,
+) -> tuple[float, int] | None:
+    candidates = position_pool.head(n_players + 1).copy()
+    if len(candidates) <= n_players:
+        return None
+
+    prices = _price_values(candidates)
+    reserve_index = prices.idxmin()
+    starter_prices = prices.drop(index=reserve_index)
+    if starter_prices.empty or prices.loc[reserve_index] >= starter_prices.min():
+        return None
+
+    reserve_points = pd.to_numeric(
+        pd.Series([candidates.loc[reserve_index, "pontos_previstos"]]),
+        errors="coerce",
+    ).fillna(float("-inf")).iloc[0]
+
+    return float(reserve_points), reserve_index
 
 
 def assign_captain(
@@ -389,12 +428,14 @@ def lineup_output_table(time_df: pd.DataFrame) -> pd.DataFrame:
 def apply_reserve_substitutions(
     team_df: pd.DataFrame,
     play_status_df: pd.DataFrame | None = None,
+    points_column: str = "pontos",
 ) -> pd.DataFrame:
     """
-    Return the scoring lineup after same-position reserve substitutions.
+    Return the scoring lineup after same-position luxury reserve substitutions.
 
-    Each non-TEC position can have at most one reserve, and that reserve can
-    replace at most one starter whose `jogou` flag is explicitly False.
+    The luxury reserve is restricted to MEI and ATA. Each eligible position can
+    have at most one reserve, and that reserve replaces the lowest-scoring
+    starter in the same position only when the reserve scores more points.
     """
     if team_df.empty:
         return team_df.copy()
@@ -405,7 +446,7 @@ def apply_reserve_substitutions(
     if CAPTAIN_COL not in team_df.columns:
         team_df[CAPTAIN_COL] = False
 
-    played_by_athlete = _played_lookup(team_df, play_status_df)
+    points_by_athlete = _points_lookup(team_df, play_status_df, points_column)
     starters = team_df[~team_df["reserva"].fillna(False).astype(bool)].copy()
     reserves = team_df[team_df["reserva"].fillna(False).astype(bool)].copy()
     final_players = []
@@ -415,23 +456,26 @@ def apply_reserve_substitutions(
         replacement_row = None
         replaced_index = None
 
-        if int(position) != TEC_POSITION_ID:
+        if int(position) in LUXURY_RESERVE_POSITIONS:
             position_reserves = reserves[reserves["posicao_id"] == position]
             if not position_reserves.empty:
                 reserve = position_reserves.iloc[0].copy()
-                for starter_index, starter in position_starters.iterrows():
-                    played_value = played_by_athlete.get(
-                        starter["atleta_id"],
-                        starter.get("jogou", pd.NA),
-                    )
-                    if _did_not_play(played_value):
-                        if bool(starter.get(CAPTAIN_COL, False)):
-                            reserve[CAPTAIN_COL] = True
-                        reserve["substituiu_atleta_id"] = starter["atleta_id"]
-                        reserve["substituiu_apelido"] = starter.get("apelido", "")
-                        replacement_row = reserve
-                        replaced_index = starter_index
-                        break
+                reserve_score = _player_score(reserve, points_by_athlete, points_column)
+                starter_scores = position_starters.apply(
+                    lambda starter: _player_score(starter, points_by_athlete, points_column),
+                    axis=1,
+                )
+                lowest_starter_index = starter_scores.idxmin()
+                lowest_starter_score = starter_scores.loc[lowest_starter_index]
+
+                if reserve_score > lowest_starter_score:
+                    starter = position_starters.loc[lowest_starter_index]
+                    if bool(starter.get(CAPTAIN_COL, False)):
+                        reserve[CAPTAIN_COL] = True
+                    reserve["substituiu_atleta_id"] = starter["atleta_id"]
+                    reserve["substituiu_apelido"] = starter.get("apelido", "")
+                    replacement_row = reserve
+                    replaced_index = lowest_starter_index
 
         if replacement_row is not None:
             position_starters = position_starters.drop(index=replaced_index)
@@ -483,8 +527,9 @@ def build_team(
     df = df.sort_values("pontos_previstos", ascending=False)
 
     selected_players = []
+    position_pools = {}
 
-    for position, n_players in formation.items():        
+    for position in formation:
         position_pool = df[df["posicao_id"] == position].copy()
         if position in POS_THRESHOLD and odds_filter:
             position_pool = apply_odds_filter(
@@ -492,15 +537,42 @@ def build_team(
                 min_prob_win=odds_filter["min_prob_win"],
                 max_prob_loss=odds_filter["max_prob_loss"],
             )
+        position_pools[position] = position_pool
+
+    reserve_candidates = []
+    for position in LUXURY_RESERVE_POSITIONS:
+        if position not in formation:
+            continue
+
+        candidate = _luxury_reserve_candidate(position_pools[position], formation[position])
+        if candidate is None:
+            continue
+
+        reserve_points, _ = candidate
+        reserve_candidates.append((reserve_points, position))
+
+    luxury_reserve_position = None
+    if reserve_candidates:
+        _, luxury_reserve_position = max(reserve_candidates)
+
+    for position, n_players in formation.items():
+        position_pool = position_pools[position]
         chosen = []
-        selection_limit = n_players + (0 if int(position) == TEC_POSITION_ID else 1)
+        reserve_index = None
+        selection_limit = n_players
+
+        if int(position) == luxury_reserve_position:
+            candidate = _luxury_reserve_candidate(position_pool, n_players)
+            if candidate is not None:
+                _, reserve_index = candidate
+                selection_limit += 1
 
         for _, player in position_pool.iterrows():            
             if len(chosen) >= selection_limit:
                 break
 
             player = player.copy()
-            player["reserva"] = len(chosen) >= n_players
+            player["reserva"] = player.name == reserve_index
             chosen.append(player)
 
         selected_players.extend(chosen)
