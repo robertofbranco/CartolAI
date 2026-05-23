@@ -215,6 +215,74 @@ class FeatureEngineeringTest(unittest.TestCase):
         self.assertEqual(round_3["gols_feitos_adv_5r"], 0.5)
         self.assertEqual(round_3["gols_sofridos_adv_5r"], 1.5)
 
+    def test_adds_foul_and_shot_scout_rolling_features_from_previous_rounds(self):
+        players = pd.DataFrame(
+            [
+                {
+                    "temporada": 2026,
+                    "rodada": 1,
+                    "atleta_id": 100,
+                    "clube_id": 1,
+                    "pontos": 1.0,
+                    "jogou": True,
+                    "preco": 10.0,
+                    "scout_FD": 2,
+                    "scout_FF": 1,
+                    "scout_FT": 0,
+                },
+                {
+                    "temporada": 2026,
+                    "rodada": 2,
+                    "atleta_id": 100,
+                    "clube_id": 1,
+                    "pontos": 2.0,
+                    "jogou": True,
+                    "preco": 10.0,
+                    "scout_FD": 5,
+                    "scout_FF": 1,
+                    "scout_FT": 1,
+                },
+                {
+                    "temporada": 2026,
+                    "rodada": 3,
+                    "atleta_id": 100,
+                    "clube_id": 1,
+                    "pontos": 3.0,
+                    "jogou": True,
+                    "preco": 10.0,
+                    "scout_FD": 9,
+                    "scout_FF": 3,
+                    "scout_FT": 3,
+                },
+            ]
+        )
+        matches = pd.DataFrame(
+            [
+                {
+                    "temporada": 2026,
+                    "rodada": rodada,
+                    "clube_id": 1,
+                    "mando": 1,
+                    "clube_adversario_id": 2,
+                    "gols_feitos_clube": 1,
+                    "gols_sofridos_clube": 0,
+                }
+                for rodada in [1, 2, 3]
+            ]
+        )
+
+        features = build_features(players, matches, pd.DataFrame())
+
+        round_1 = features.loc[features["rodada"] == 1].iloc[0]
+        self.assertTrue(pd.isna(round_1["scout_FD_5r"]))
+        self.assertTrue(pd.isna(round_1["scout_FF_5r"]))
+        self.assertTrue(pd.isna(round_1["scout_FT_5r"]))
+
+        round_3 = features.loc[features["rodada"] == 3].iloc[0]
+        self.assertEqual(round_3["scout_FD_5r"], 2.5)
+        self.assertEqual(round_3["scout_FF_5r"], 0.5)
+        self.assertEqual(round_3["scout_FT_5r"], 0.5)
+
 
 if __name__ == "__main__":
     unittest.main()
