@@ -45,6 +45,7 @@ LINEUP_OUTPUT_COLUMNS = [
     "mando",
     "pontos_previstos",
     "reserva",
+    "reserva_de_luxo",
     "capitao",
 ]
 
@@ -261,15 +262,37 @@ def _points_lookup(
     )
 
 
+def _did_not_play(value) -> bool:
+    """Return True only when a played flag is explicitly false."""
+    if pd.isna(value):
+        return False
+
+    if isinstance(value, str):
+        return value.strip().lower() in {"false", "0", "nao", "n"}
+
+    return value is False or value == 0
+
+
+def _played_lookup(team_df: pd.DataFrame, play_status_df: pd.DataFrame | None = None) -> dict:
+    status_source = play_status_df if play_status_df is not None else team_df
+    if not {"atleta_id", "jogou"}.issubset(status_source.columns):
+        return {}
+
+    return (
+        status_source[["atleta_id", "jogou"]]
+        .dropna(subset=["atleta_id"])
+        .drop_duplicates("atleta_id", keep="last")
+        .set_index("atleta_id")["jogou"]
+        .to_dict()
+    )
+
+
 def _player_score(
     player: pd.Series,
     points_by_athlete: dict,
     points_column: str = "pontos",
 ) -> float:
     value = points_by_athlete.get(player.get("atleta_id"), player.get(points_column, pd.NA))
-    if pd.isna(value) and points_column != "pontos_previstos":
-        value = player.get("pontos_previstos", pd.NA)
-
     value = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
     if pd.isna(value):
         return float("-inf")
@@ -367,7 +390,7 @@ def score_with_captain_bonus(
 
 
 def lineup_output_table(time_df: pd.DataFrame) -> pd.DataFrame:
-    """Return lineup information using the same columns as backtest_time_escalado.csv."""
+    """Return the compact lineup table used for CLI display."""
     output_df = time_df.copy()
 
     if "posicao" not in output_df.columns:
@@ -443,10 +466,13 @@ def apply_reserve_substitutions(
     team_df = team_df.copy()
     if "reserva" not in team_df.columns:
         team_df["reserva"] = False
+    if "reserva_de_luxo" not in team_df.columns:
+        team_df["reserva_de_luxo"] = False
     if CAPTAIN_COL not in team_df.columns:
         team_df[CAPTAIN_COL] = False
 
     points_by_athlete = _points_lookup(team_df, play_status_df, points_column)
+    played_by_athlete = _played_lookup(team_df, play_status_df)
     starters = team_df[~team_df["reserva"].fillna(False).astype(bool)].copy()
     reserves = team_df[team_df["reserva"].fillna(False).astype(bool)].copy()
     final_players = []
@@ -456,10 +482,13 @@ def apply_reserve_substitutions(
         replacement_row = None
         replaced_index = None
 
-        if int(position) in LUXURY_RESERVE_POSITIONS:
-            position_reserves = reserves[reserves["posicao_id"] == position]
-            if not position_reserves.empty:
-                reserve = position_reserves.iloc[0].copy()
+        position_reserves = reserves[reserves["posicao_id"] == position]
+        if not position_reserves.empty and int(position) != TEC_POSITION_ID:
+            luxury_reserves = position_reserves[
+                position_reserves["reserva_de_luxo"].fillna(False).astype(bool)
+            ]
+            if int(position) in LUXURY_RESERVE_POSITIONS and not luxury_reserves.empty:
+                reserve = luxury_reserves.iloc[0].copy()
                 reserve_score = _player_score(reserve, points_by_athlete, points_column)
                 starter_scores = position_starters.apply(
                     lambda starter: _player_score(starter, points_by_athlete, points_column),
@@ -476,6 +505,22 @@ def apply_reserve_substitutions(
                     reserve["substituiu_apelido"] = starter.get("apelido", "")
                     replacement_row = reserve
                     replaced_index = lowest_starter_index
+
+            if replacement_row is None:
+                reserve = position_reserves.iloc[0].copy()
+                for starter_index, starter in position_starters.iterrows():
+                    played_value = played_by_athlete.get(
+                        starter["atleta_id"],
+                        starter.get("jogou", pd.NA),
+                    )
+                    if _did_not_play(played_value):
+                        if bool(starter.get(CAPTAIN_COL, False)):
+                            reserve[CAPTAIN_COL] = True
+                        reserve["substituiu_atleta_id"] = starter["atleta_id"]
+                        reserve["substituiu_apelido"] = starter.get("apelido", "")
+                        replacement_row = reserve
+                        replaced_index = starter_index
+                        break
 
         if replacement_row is not None:
             position_starters = position_starters.drop(index=replaced_index)
@@ -559,34 +604,38 @@ def build_team(
         position_pool = position_pools[position]
         chosen = []
         reserve_index = None
-        selection_limit = n_players
+        reserve_slots = 0 if int(position) == TEC_POSITION_ID else 1
+        selection_limit = n_players + reserve_slots
 
         if int(position) == luxury_reserve_position:
             candidate = _luxury_reserve_candidate(position_pool, n_players)
             if candidate is not None:
                 _, reserve_index = candidate
-                selection_limit += 1
 
         for _, player in position_pool.iterrows():            
             if len(chosen) >= selection_limit:
                 break
 
             player = player.copy()
-            player["reserva"] = player.name == reserve_index
+            player["reserva"] = (
+                player.name == reserve_index
+                if reserve_index is not None
+                else len(chosen) >= n_players
+            )
+            player["reserva_de_luxo"] = player.name == reserve_index
             chosen.append(player)
 
         selected_players.extend(chosen)
 
     team_df = pd.DataFrame(selected_players)
-    team_df = team_df.sort_values(["posicao_id", "pontos_previstos"], ascending=[True, False])
+    team_df = team_df.sort_values(["reserva", "posicao_id", "pontos_previstos"], ascending=[True, True, False])
     team_df = assign_captain(team_df, score_column="pontos_previstos")
 
     if include_reserves:
         return team_df.reset_index(drop=True)
 
-    team_df = apply_reserve_substitutions(team_df)
-
-    return team_df
+    starters = team_df[~team_df["reserva"].fillna(False).astype(bool)].copy()
+    return starters.reset_index(drop=True)
 
 
 # ──────────────────────────────────────────────
@@ -594,14 +643,29 @@ def build_team(
 # ──────────────────────────────────────────────
 
 def imprimir_time(time_df: pd.DataFrame):
-    total_pred = score_with_captain_bonus(time_df, points_column="pontos_previstos")
-    total_preco = time_df["preco"].sum() if "preco" in time_df.columns else 0.0
+    if "reserva" in time_df.columns:
+        scoring_df = time_df[~time_df["reserva"].fillna(False).astype(bool)].copy()
+    else:
+        scoring_df = time_df
+
+    total_pred = score_with_captain_bonus(scoring_df, points_column="pontos_previstos")
+    total_preco = scoring_df["preco"].sum() if "preco" in scoring_df.columns else 0.0
     output_df = lineup_output_table(time_df)
 
     print("\n" + "="*140)
     print(f"{'CARTOLA FC - TIME':^140}")
     print("="*140)
-    print(output_df.to_string(index=False))
+    if "reserva" in output_df.columns:
+        reserve_mask = output_df["reserva"].fillna(False).astype(bool)
+        starters_table = output_df[~reserve_mask]
+        reserves_table = output_df[reserve_mask]
+
+        print(starters_table.to_string(index=False))
+        if not reserves_table.empty:
+            print("-"*140)
+            print(reserves_table.to_string(index=False, header=True))
+    else:
+        print(output_df.to_string(index=False))
     print("-"*140)
     print(f"Budget usado: {total_preco:.1f} | Pts previstos com capitao: {total_pred:.2f}")
     print("="*140)
@@ -680,7 +744,7 @@ def main():
         features,
         round_limit=rodada_alvo,
         season=CURRENT_SEASON,
-        tuning=TUNING
+        tuning=TUNING,
     )
     feature_cols = feature_cols_from_models(models_by_pos)
     mae = mean_mae_from_models(models_by_pos)
@@ -693,7 +757,7 @@ def main():
         df_matches=df_matches,
     )
 
-    team = build_team(market_data, models_by_pos)
+    team = build_team(market_data, models_by_pos, include_reserves=True)
 
     imprimir_time(team)
 

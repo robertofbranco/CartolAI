@@ -19,7 +19,7 @@ import sys
 import pandas as pd
 import matplotlib
 
-from cartola_data.config import CAPTAIN_BONUS, DATA_DIR
+from cartola_data.config import CAPTAIN_BONUS, CURRENT_SEASON, DATA_DIR, RISK_TUNING
 from cartola_data.datasets import read_datasets
 from feature_engineering import build_features
 matplotlib.use("Agg")
@@ -63,6 +63,7 @@ CSV_PLAYERS_COLUMNS = [
     "pontos_previstos",    
     "capitao",
     "reserva",
+    "reserva_de_luxo",
     "substituiu_apelido"
 ]
 
@@ -608,10 +609,11 @@ def rodar_backtest(
             clube = (p.get("clube") or "")[:16]
             adv = (p["adversario"] or "")[:16]
             reserva = " RES" if bool(p.get("reserva", False)) else ""
+            luxo = " LUX" if bool(p.get("reserva_de_luxo", False)) else ""
             capitao = " CAP" if bool(p.get(CAPTAIN_COL, False)) else ""
             log.info(
                 f"  {p['posicao']:<3} {apelido:<20} {clube:<16} vs {adv:<16}"
-                f"{reserva:<4}{capitao:<4} "
+                f"{reserva:<4}{luxo:<4}{capitao:<4} "
                 f"avg={p['media']:>5.2f} preco={p['preco']:>5.1f} "
                 f"pts={p['pontos_real']:>5.1f} final={p['pontos_com_bonus']:>5.1f}"
             )
@@ -843,6 +845,15 @@ def gerar_relatorio(resultados: list[ResultadoRodada], output_dir: str | Path = 
 
         time_escalado["rodada"] = resultado.rodada
         lineup_table = lineup_output_table(time_escalado)
+        if "pontos_real" in time_escalado.columns:
+            lineup_table["pontos"] = time_escalado["pontos_real"].to_numpy()
+        elif "pontos" in time_escalado.columns:
+            lineup_table["pontos"] = time_escalado["pontos"].to_numpy()
+        if "pontos_com_bonus" in time_escalado.columns:
+            lineup_table["pontos_com_bonus"] = time_escalado["pontos_com_bonus"].to_numpy()
+        for column in ["substituiu_atleta_id", "substituiu_apelido"]:
+            if column in time_escalado.columns:
+                lineup_table[column] = time_escalado[column].to_numpy()
         lineup_table["_posicao_id"] = time_escalado["posicao_id"].to_numpy()
         selected_players_rows.append(lineup_table)
 
@@ -873,8 +884,9 @@ def gerar_relatorio(resultados: list[ResultadoRodada], output_dir: str | Path = 
 
 def main():
     parser = argparse.ArgumentParser(description="Cartola FC — Backtesting Engine")
-    parser.add_argument("--inicio",  type=int, default=10,    help="Primeira rodada a testar (mín. 6)")
-    parser.add_argument("--fim",     type=int, default=15,   help="Última rodada a testar")
+    parser.add_argument("--temporada",  type=int, default=CURRENT_SEASON,    help="Primeira rodada a testar (mín. 6)")
+    parser.add_argument("--inicio",     type=int, default=10,    help="Primeira rodada a testar (mín. 6)")
+    parser.add_argument("--fim",        type=int, default=16,   help="Última rodada a testar")
     parser.add_argument(
         "--output-folder",
         type=Path,
@@ -886,6 +898,7 @@ def main():
 
     # Rodar backtest
     resultados = rodar_backtest(
+        season=args.temporada,
         rodada_inicio=args.inicio,
         rodada_fim=args.fim,
         output_folder=args.output_folder,
