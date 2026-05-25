@@ -31,7 +31,9 @@ from dataclasses import dataclass, field
 from cartola_team_builder import (
     assign_captain,
     apply_reserve_substitutions,
+    available_model_strategies,
     build_team,
+    DEFAULT_MODEL_STRATEGY,
     lineup_output_table,
     merge_target_round_odds,
     feature_cols_from_models,
@@ -457,6 +459,7 @@ def rodar_backtest(
     formation: dict = FORMATION,
     season: int = 2026,
     tuning: dict = TUNING,
+    strategy: str = DEFAULT_MODEL_STRATEGY,
     output_folder: str | Path | None = RESULTS_DIR,
 ) -> list[ResultadoRodada]:
     """
@@ -525,7 +528,8 @@ def rodar_backtest(
                 df_feat,
                 round_limit=rodada_alvo,
                 season=season,
-                tuning=tuning
+                tuning=tuning,
+                strategy=strategy,
             )
         except ValueError as e:
             log.warning(f"Rodada {rodada_alvo}: {e}")
@@ -893,6 +897,12 @@ def main():
         default=RESULTS_DIR,
         help="Pasta onde salvar os arquivos gerados pelo backtest",
     )
+    parser.add_argument(
+        "--model-strategy",
+        choices=available_model_strategies(),
+        default=DEFAULT_MODEL_STRATEGY,
+        help="Metodo de ML usado para treinar os modelos por posicao",
+    )
     #parser.add_argument("--budget",  type=float, default=140.0)
     args = parser.parse_args()    
 
@@ -901,6 +911,7 @@ def main():
         season=args.temporada,
         rodada_inicio=args.inicio,
         rodada_fim=args.fim,
+        strategy=args.model_strategy,
         output_folder=args.output_folder,
     )
 

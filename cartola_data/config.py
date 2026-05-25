@@ -23,8 +23,8 @@ FORMATION = {
 }
 
 ODDS_FILTER = {
-    "min_prob_win": 0.20,
-    "max_prob_loss": 0.40,
+    "min_prob_win": 0.15,
+    "max_prob_loss": 0.35,
 }
 
 POSICAO_NOME = {
@@ -90,4 +90,22 @@ RISK_TUNING = {
     "min_samples_split": 2,
     "max_features": "sqrt",
     "n_jobs": -1,
+}
+
+GRADIENT_BOOSTING_TUNING = {
+    "n_estimators": 1200,
+    "learning_rate": 0.01,
+    "max_depth": 2,
+    "num_leaves": 15,
+    "min_child_samples": 15,
+    "random_state": 42,
+    "subsample": 0.8,
+    "colsample_bytree": 0.8,
+    "reg_alpha": 0.1,
+    "reg_lambda": 1.0,
+    "objective": "regression",
+    "metric": "mae",
+    "early_stopping_rounds": 50,
+    "n_jobs": -1,
+    "verbosity": -1,
 }
