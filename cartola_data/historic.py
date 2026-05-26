@@ -9,7 +9,8 @@ import requests
 from tqdm import tqdm
 
 from .api import CartolaAPI, CbfAPI, GatoMestreAPI
-from .config import DATA_DIR
+from .config import CBF_NOME_TO_ABBR, DATA_DIR, NOME_TO_ABBR
+from .file_manager import FileManager, MatchesDataset, OddsDataset, PlayersDataset
 from .transforms import deduplicate_by_key
 
 log = logging.getLogger(__name__)
@@ -62,78 +63,6 @@ RECOGNIZED_SCOUTS = {
     "DP",
     "DE",
     "V",
-}
-
-NOME_TO_ABBR = {
-    "Flamengo": "FLA",
-    "Botafogo": "BOT",
-    "Corinthians": "COR",
-    "Bahia": "BAH",
-    "Fluminense": "FLU",
-    "Vasco": "VAS",
-    "Palmeiras": "PAL",
-    "Sao Paulo": "SAO",
-    "Santos": "SAN",
-    "Bragantino": "RBB",
-    "Atletico-MG": "CAM",
-    "Cruzeiro": "CRU",
-    "Gremio": "GRE",
-    "Internacional": "INT",
-    "Juventude": "JUV",
-    "Vitoria": "VIT",
-    "Criciuma": "CRI",
-    "Goias": "GOI",
-    "Athletico-PR": "CAP",
-    "Coritiba": "CFC",
-    "America-MG": "AME",
-    "Fortaleza": "FOR",
-    "Atletico-GO": "ACG",
-    "Cuiaba": "CUI",
-    "Avai": "AVA",
-    "Ceara": "CEA",
-}
-
-CBF_NOME_TO_ABBR = {
-    "America Fc Saf": "AME",
-    "America Mineiro": "AME",
-    "America Saf": "AME",
-    "America": "AME",
-    "Atletico Goianiense": "ACG",
-    "Atletico Goianiense Saf": "ACG",
-    "Atletico Mineiro": "CAM",
-    "Athletico Paranaense": "CAP",
-    "Bahia": "BAH",
-    "Botafogo": "BOT",
-    "Ceara": "CEA",
-    "Corinthians": "COR",
-    "Coritiba": "CFC",
-    "Coritiba Saf": "CFC",
-    "Criciuma": "CRI",
-    "Cruzeiro": "CRU",
-    "Cruzeiro Saf": "CRU",
-    "Cuiaba": "CUI",
-    "Cuiaba Saf": "CUI",
-    "Flamengo": "FLA",
-    "Fluminense": "FLU",
-    "Fortaleza": "FOR",
-    "Fortaleza Ec Saf": "FOR",
-    "Fortaleza Esporte Clube": "FOR",
-    "Fortaleza Saf": "FOR",
-    "Goias": "GOI",
-    "Gremio": "GRE",
-    "Internacional": "INT",
-    "Juventude": "JUV",
-    "Mirassol": "MIR",
-    "Palmeiras": "PAL",
-    "Red Bull Bragantino": "RBB",
-    "Santos": "SAN",
-    "Santos Fc": "SAN",
-    "Sao Paulo": "SAO",
-    "Sport Recife": "SPT",
-    "Vasco": "VAS",
-    "Vasco Da Gama": "VAS",
-    "Vasco Da Gama Saf": "VAS",
-    "Vitoria": "VIT",
 }
 
 
@@ -293,10 +222,11 @@ def _name_key(value: str) -> str:
 
 def build_abbr_to_clube_id(data_dir: Path, year: int) -> dict[str, int]:
     abbr_to_id: dict[str, int] = {}
+    file_manager = FileManager(data_dir)
 
     def ingest_parquet(parquet: Path) -> None:
         try:
-            df = pd.read_parquet(parquet, columns=["clube_id", "clube_abreviacao"])
+            df = file_manager.read_parquet(parquet, columns=["clube_id", "clube_abreviacao"])
         except Exception:
             return
 
@@ -311,12 +241,13 @@ def build_abbr_to_clube_id(data_dir: Path, year: int) -> dict[str, int]:
                 if abbr:
                     abbr_to_id.setdefault(abbr, cid)
 
-    primary = data_dir / f"jogadores_por_rodada_{year}.parquet"
-    if primary.exists():
-        ingest_parquet(primary)
+    primary_dataset = PlayersDataset(season=year, data_dir=data_dir)
+    if primary_dataset.exists():
+        ingest_parquet(primary_dataset.path)
 
-    for parquet in sorted(data_dir.glob("jogadores_por_rodada_*.parquet")):
-        if parquet != primary:
+    yearly_players = file_manager.find_yearly_parquets(["jogadores_por_rodada"])
+    for _, parquet in sorted(yearly_players.get("jogadores_por_rodada", [])):
+        if parquet != primary_dataset.path:
             ingest_parquet(parquet)
 
     try:
@@ -484,15 +415,13 @@ def import_historic_season(
 ) -> HistoricImportResult:
     target_rounds = rounds or list(range(1, 39))
     result = HistoricImportResult(year=year)
-    
     if collect_players_data:
         players = get_players_data_from_caRtola(year, target_rounds)
         if players.empty:
             log.error("Nenhum dado coletado para %s.", year)
             return result
 
-        players_path = DATA_DIR / f"jogadores_por_rodada_{year}.parquet"
-        players.to_parquet(players_path, index=False)
+        players_path = PlayersDataset(season=year).write(players)
         result.files["jogadores_por_rodada"] = players_path
         log.info(
             "Historico %s salvo: %s rodadas, %s atletas -> %s",
@@ -523,14 +452,12 @@ def import_historic_season(
         log.warning("CARTOLA_TOKEN nao definido - odds de %s nao coletadas.", year)
 
     if not matches.empty:
-        matches_path = DATA_DIR / f"partidas_{year}.parquet"
-        matches.to_parquet(matches_path, index=False)
+        matches_path = MatchesDataset(season=year).write(matches)
         result.files["partidas"] = matches_path
         log.info("Partidas %s salvas -> %s", year, matches_path)
 
     if not odds.empty:
-        odds_path = DATA_DIR / f"odds_{year}.parquet"
-        odds.to_parquet(odds_path, index=False)
+        odds_path = OddsDataset(season=year).write(odds)
         result.files["odds"] = odds_path
         log.info("Odds %s salvas -> %s", year, odds_path)
 

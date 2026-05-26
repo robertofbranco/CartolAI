@@ -8,6 +8,15 @@ from tqdm import tqdm
 
 from .api import CartolaAPI, GatoMestreAPI
 from .config import CURRENT_SEASON, DATA_DIR, DEFAULT_LIGAS
+from .file_manager import (
+    CartolaUsersMeanDataset,
+    CurrentMarketDataset,
+    DatasetFile,
+    LeagueBracketsDataset,
+    MatchesDataset,
+    OddsDataset,
+    PlayersDataset,
+)
 from .transforms import deduplicate_by_key
 
 log = logging.getLogger(__name__)
@@ -41,43 +50,70 @@ def _iter_atletas(atletas: dict | list) -> list[tuple[int | None, dict]]:
     return [(atleta.get("atleta_id"), atleta) for atleta in atletas]
 
 
-def get_players_data_from_cartola_api(
+def _load_current_market_by_atleta(data_dir: Path | None = None) -> dict[int, dict]:
+    market_dataset = CurrentMarketDataset(data_dir=data_dir or DATA_DIR)
+    if not market_dataset.exists():
+        log.warning("Mercado atual nao encontrado: %s", market_dataset.path)
+        return {}
+
+    try:
+        market = market_dataset.read()
+    except Exception as exc:
+        log.warning("Nao foi possivel ler mercado atual de %s: %s", market_dataset.path, exc)
+        return {}
+
+    if market.empty or "atleta_id" not in market.columns:
+        return {}
+
+    market = market.dropna(subset=["atleta_id"]).drop_duplicates("atleta_id", keep="last")
+    return {
+        int(row["atleta_id"]): row
+        for row in market.to_dict("records")
+    }
+
+
+def _market_value(market_row: dict, column: str, default):
+    value = market_row.get(column, default)
+    return default if pd.isna(value) else value
+
+
+def get_round_players_data_from_cartola(
     api: CartolaAPI,
-    rodadas_alvo: list[int],
+    rodada: int,
     temporada: int = CURRENT_SEASON,
 ) -> pd.DataFrame:
     """Collect player scores by round from /atletas/pontuados."""
     rows = []
     clubes = {int(key): value.get("nome", "") for key, value in api.clubes().items()}
+    market_by_atleta = _load_current_market_by_atleta()
+    try:
+        data = api.atletas_pontuados(rodada)
+    except Exception as exc:
+        log.warning("Rodada %s indisponivel: %s", rodada, exc)
+        return pd.DataFrame()
 
-    for rodada in tqdm(rodadas_alvo, desc="Coletando rodadas"):
-        try:
-            data = api.atletas_pontuados(rodada)
-        except Exception as exc:
-            log.warning("Rodada %s indisponivel: %s", rodada, exc)
-            continue
-
-        for atleta_id, atleta in _iter_atletas(data.get("atletas", {})):
-            scout = atleta.get("scout", {}) or {}
-            rows.append(
-                {
-                    "temporada": temporada,
-                    "rodada": rodada,
-                    "atleta_id": atleta_id,
-                    "apelido": atleta.get("apelido"),
-                    "posicao_id": atleta.get("posicao_id"),
-                    "clube_id": atleta.get("clube_id"),
-                    "clube_nome": clubes.get(atleta.get("clube_id"), ""),
-                    "status_id": atleta.get("status_id"),
-                    "pontos": atleta.get("pontuacao", atleta.get("pontos_num", 0.0)),
-                    "preco": atleta.get("preco_num", 0.0),
-                    "media": 0.0,
-                    "jogos": 0,
-                    "jogou": atleta.get("entrou_em_campo", True),
-                    **{f"scout_{key}": value for key, value in scout.items()},
-                }
-            )
-        time.sleep(0.3)
+    for atleta_id, atleta in _iter_atletas(data.get("atletas", {})):
+        scout = atleta.get("scout", {}) or {}
+        market_row = market_by_atleta.get(int(atleta_id or 0), {})
+        rows.append(
+            {
+                "temporada": temporada,
+                "rodada": rodada,
+                "atleta_id": atleta_id,
+                **{f"scout_{key}": value for key, value in scout.items()},
+                "apelido": atleta.get("apelido"),
+                "pontos": atleta.get("pontuacao", 0.0),
+                "posicao_id": atleta.get("posicao_id"),
+                "clube_id": atleta.get("clube_id"),
+                "clube_nome": clubes.get(atleta.get("clube_id"), ""),
+                "jogou": atleta.get("entrou_em_campo", True),
+                "status_id": _market_value(market_row, "status_id", None),
+                "preco": _market_value(market_row, "preco", 0.0),
+                "media": _market_value(market_row, "media", 0.0),
+                "jogos": _market_value(market_row, "jogos", 0),
+            }
+        )
+    time.sleep(0.3)
 
     df = pd.DataFrame(rows)
     if df.empty:
@@ -125,17 +161,17 @@ def _season_clube_ids(temporada: int | None, data_dir: Path = DATA_DIR) -> set[i
         return set()
 
     clube_ids: set[int] = set()
-    for parquet in [
-        data_dir / f"jogadores_por_rodada_{temporada}.parquet",
-        data_dir / f"partidas_{temporada}.parquet",
+    for dataset in [
+        PlayersDataset(season=temporada, data_dir=data_dir),
+        MatchesDataset(season=temporada, data_dir=data_dir),
     ]:
-        if not parquet.exists():
+        if not dataset.exists():
             continue
 
         try:
-            df = pd.read_parquet(parquet, columns=["clube_id"])
+            df = dataset.read(columns=["clube_id"])
         except Exception as exc:
-            log.warning("Nao foi possivel ler clubes de %s: %s", parquet, exc)
+            log.warning("Nao foi possivel ler clubes de %s: %s", dataset.path, exc)
             continue
 
         clube_ids.update(df["clube_id"].dropna().astype(int).unique().tolist())
@@ -324,13 +360,13 @@ def get_league_brackets(api: CartolaAPI, ligas: list[str]) -> pd.DataFrame:
 
 def _save_yearly_dataset(
     df: pd.DataFrame,
-    path: Path,
     result: CurrentSeasonCollectionResult,
     key: str,
+    dataset: DatasetFile,
 ) -> None:
     if df.empty:
         return
-    df.to_parquet(path, index=False)
+    path = dataset.write(df)
     result.files[key] = path
 
 
@@ -351,32 +387,39 @@ def collect_current_season(
 
     matches_rounds = sorted(set(target_rounds + [current_round]))
     matches = preparar_partidas(api, matches_rounds, temporada=temporada)
-    _save_yearly_dataset(matches, DATA_DIR / f"partidas_{temporada}.parquet", result, "partidas")
+    _save_yearly_dataset(
+        matches,
+        result,
+        "partidas",
+        MatchesDataset(season=temporada, data_dir=DATA_DIR),
+    )
 
     market = get_current_market(api)
     if not market.empty:
-        market_file = DATA_DIR / "mercado_atual.parquet"
-        market.to_parquet(market_file, index=False)
+        market_file = CurrentMarketDataset(data_dir=DATA_DIR).write(market)
         result.files["mercado_atual"] = market_file
         log.info("Mercado atual salvo: %s atletas -> %s", len(market), market_file)
 
     if token:
         gato_api = GatoMestreAPI(token=token, temporada=temporada)        
         odds = get_odds(gato_api, api.clubes(), matches_rounds, temporada=temporada)
-        _save_yearly_dataset(odds, DATA_DIR / f"odds_{temporada}.parquet", result, "odds")
+        _save_yearly_dataset(
+            odds,
+            result,
+            "odds",
+            OddsDataset(season=temporada, data_dir=DATA_DIR),
+        )
     else:
         log.info("CARTOLA_TOKEN nao definido - odds nao coletadas.")
 
     user_means = get_cartola_users_mean(api, target_rounds)
     if not user_means.empty:
-        means_file = DATA_DIR / "medias_cartoleiros.parquet"
-        user_means.to_parquet(means_file, index=False)
+        means_file = CartolaUsersMeanDataset(data_dir=DATA_DIR).write(user_means)
         result.files["medias_cartoleiros"] = means_file
 
     league_brackets = get_league_brackets(api, ligas or DEFAULT_LIGAS)
     if not league_brackets.empty:
-        brackets_file = DATA_DIR / "chaves_ligas.parquet"
-        league_brackets.to_parquet(brackets_file, index=False)
+        brackets_file = LeagueBracketsDataset(data_dir=DATA_DIR).write(league_brackets)
         result.files["chaves_ligas"] = brackets_file
 
     return result
