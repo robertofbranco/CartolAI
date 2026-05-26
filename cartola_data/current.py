@@ -372,29 +372,29 @@ def collect_latest_api_data(
         log.error("Nenhuma rodada para coletar.")
         return
     
-    matches = preparar_partidas(api, [current_round], temporada=season)
-    matches_file = MatchesDataset(season=season).write(matches)    
-    log.info("Partidas salvas: %s -> %s", len(matches), matches_file)
+    new_matches = preparar_partidas(api, [current_round], temporada=season)
+    matches_file = MatchesDataset(season=season).append(new_matches)    
+    log.info("Partidas salvas: %s -> %s", len(new_matches), matches_file)
 
     market = get_current_market(api)
     if not market.empty:
-        market_file = CurrentMarketDataset(data_dir=DATA_DIR).write(market)        
+        market_file = CurrentMarketDataset().write(market)
         log.info("Mercado atual salvo: %s atletas -> %s", len(market), market_file)
 
     if token:
-        gato_api = GatoMestreAPI(token=token, temporada=season)        
-        odds = get_odds(gato_api, api.clubes(), [current_round], temporada=season)
-        odds_file =     OddsDataset(season=season).write(odds)
-        log.info("Odds salvas: %s -> %s", len(odds), odds_file)
+        gato_api = GatoMestreAPI(token=token, temporada=season)
+        new_odds = get_odds(gato_api, api.clubes(),[current_round], temporada=season)
+        odds_file = OddsDataset(season=season).append(new_odds)
+        log.info("Odds salvas: %s -> %s", len(new_odds), odds_file)
     else:
         log.info("CARTOLA_TOKEN nao definido - odds nao coletadas.")
 
     user_means = get_cartola_users_mean(api, [previous_round])
     if not user_means.empty:
-        user_means_file = CartolaUsersMeanDataset(data_dir=DATA_DIR).write(user_means)
+        user_means_file = CartolaUsersMeanDataset(season=season).append(user_means)
         log.info("Médias dos cartoleiros salvas: %s -> %s", len(user_means), user_means_file)
 
-    league_brackets = get_league_brackets(api, ligas or DEFAULT_LIGAS)
+    league_brackets = get_league_brackets(api, DEFAULT_LIGAS)
     if not league_brackets.empty:
-        league_brackets_file = LeagueBracketsDataset(data_dir=DATA_DIR).write(league_brackets)
+        league_brackets_file = LeagueBracketsDataset().write(league_brackets)
         log.info("Chaves das ligas salvas: %s -> %s", len(league_brackets), league_brackets_file)

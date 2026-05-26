@@ -145,6 +145,12 @@ class DatasetFile:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         df.to_parquet(self.path, index=False)
         return self.path
+    
+    def append(self, df: pd.DataFrame) -> Path:
+        if self.exists():
+            existing = self.read()
+            df = pd.concat([existing, df], ignore_index=True)
+        return self.write(df)
 
 
 class PlayersDataset(DatasetFile):
@@ -152,7 +158,7 @@ class PlayersDataset(DatasetFile):
 
 
 class MatchesDataset(DatasetFile):
-    name = "partidas"
+    name = "partidas_com_xG"
 
 
 class OddsDataset(DatasetFile):
