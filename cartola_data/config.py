@@ -70,6 +70,7 @@ STATUS = {
 DEFAULT_LIGAS = [
     "1-mata-mata-brothers-do-graia-2026",
     "2o-mata-mata-brothers-do-graia",
+    "3-mata-mata-brothers-do-graia-2026",
 ]
 
 NOME_TO_ABBR = {
