@@ -1,7 +1,10 @@
+from __future__ import annotations
+
 import re
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
+from typing import ClassVar
 
 import pandas as pd
 
@@ -22,6 +25,13 @@ class FileManager:
     def dataset_path(self, dataset: str, season: int | None = None) -> Path:
         suffix = f"_{season}" if season is not None else ""
         return self.data_dir / f"{dataset}{suffix}.parquet"
+
+    def dataset(self, dataset: str, season: int | None = None) -> DatasetFile:
+        try:
+            dataset_class = DATASET_CLASSES[dataset]
+        except KeyError as exc:
+            raise ValueError(f"Unknown dataset: {dataset}") from exc
+        return dataset_class(season=season, data_dir=self.data_dir)
 
     def cache_dir(self) -> Path:
         path = self.data_dir / "cache"
@@ -97,3 +107,78 @@ class FileManager:
             groups[dataset].append((int(match.group("year")), parquet_path))
 
         return groups
+
+
+@dataclass
+class DatasetFile:
+    season: int | None = None
+    data_dir: Path = DATA_DIR
+
+    name: ClassVar[str]
+
+    def __post_init__(self) -> None:
+        self.data_dir = Path(self.data_dir)
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def path(self) -> Path:
+        suffix = f"_{self.season}" if self.season is not None else ""
+        return self.data_dir / f"{self.name}{suffix}.parquet"
+
+    def exists(self) -> bool:
+        return self.path.exists()
+
+    def read(self, columns: list[str] | None = None) -> pd.DataFrame:
+        return pd.read_parquet(self.path, columns=columns)
+
+    def read_or_empty(self, columns: list[str] | None = None) -> pd.DataFrame:
+        if not self.exists():
+            return pd.DataFrame()
+        return self.read(columns=columns)
+
+    def read_required(self, hint: str) -> pd.DataFrame:
+        if not self.exists():
+            raise FileNotFoundError(f"{self.path} not found. {hint}")
+        return self.read()
+
+    def write(self, df: pd.DataFrame) -> Path:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        df.to_parquet(self.path, index=False)
+        return self.path
+
+
+class PlayersDataset(DatasetFile):
+    name = "jogadores_por_rodada"
+
+
+class MatchesDataset(DatasetFile):
+    name = "partidas"
+
+
+class OddsDataset(DatasetFile):
+    name = "odds"
+
+
+class CurrentMarketDataset(DatasetFile):
+    name = "mercado_atual"
+
+
+class CartolaUsersMeanDataset(DatasetFile):
+    name = "medias_cartoleiros"
+
+
+class LeagueBracketsDataset(DatasetFile):
+    name = "chaves_ligas"
+
+
+DATASET_CLASSES = {
+    dataset_class.name: dataset_class
+    for dataset_class in [
+        PlayersDataset,
+        MatchesDataset,
+        OddsDataset,
+        CurrentMarketDataset,
+        CartolaUsersMeanDataset,
+        LeagueBracketsDataset,
+    ]
+}
