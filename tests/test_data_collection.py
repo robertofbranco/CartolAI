@@ -109,7 +109,7 @@ class CollectAllDataFlowTest(unittest.TestCase):
                     return_value=api_players,
                 ) as get_api_players,
             ):
-                collect_latest_data.get_players_data(api, current_round=5, season=2026)
+                collect_latest_data.get_previous_round_players_data(api, current_round=5, season=2026)
 
             get_archive_players.assert_called_once_with(2026, [1, 2, 3, 4])
             get_api_players.assert_called_once_with(api, 4, temporada=2026)
@@ -135,7 +135,7 @@ class CollectAllDataFlowTest(unittest.TestCase):
                 ),
             ):
                 with self.assertRaisesRegex(RuntimeError, "Nenhum dado de jogadores coletado"):
-                    collect_latest_data.get_players_data(api, current_round=5, season=2026)
+                    collect_latest_data.get_previous_round_players_data(api, current_round=5, season=2026)
 
             self.assertFalse((data_dir / "jogadores_por_rodada_2026.parquet").exists())
 
@@ -271,10 +271,10 @@ class CurrentSeasonCollectionTest(unittest.TestCase):
                 patch.object(current, "get_cartola_users_mean", return_value=pd.DataFrame()),
                 patch.object(current, "get_league_brackets", return_value=pd.DataFrame()),
             ):
-                result = current.collect_current_season(
+                result = current.collect_latest_api_data(
                     api=api,
                     current_round=3,
-                    temporada=2026,
+                    season=2026,
                     token="token-123",
                 )
 
