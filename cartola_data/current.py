@@ -358,68 +358,43 @@ def get_league_brackets(api: CartolaAPI, ligas: list[str]) -> pd.DataFrame:
     return deduplicate_by_key(df, ["liga", "rodada", "chave_index"])
 
 
-def _save_yearly_dataset(
-    df: pd.DataFrame,
-    result: CurrentSeasonCollectionResult,
-    key: str,
-    dataset: DatasetFile,
-) -> None:
-    if df.empty:
-        return
-    path = dataset.write(df)
-    result.files[key] = path
-
-
-def collect_current_season(
+def collect_latest_api_data(
     api: CartolaAPI,
     current_round: int,
-    temporada: int = CURRENT_SEASON,
+    season: int = CURRENT_SEASON,
     token: str | None = None,
     ligas: list[str] | None = None,
-) -> CurrentSeasonCollectionResult:
+):
     """Collect live Cartola/Gato Mestre data and persist project datasets."""
-    target_rounds = list(range(1, current_round))
-    result = CurrentSeasonCollectionResult(season=temporada, rounds=target_rounds)
+    previous_round = current_round - 1    
 
-    if not target_rounds:
+    if not current_round:
         log.error("Nenhuma rodada para coletar.")
-        return result
-
-    matches_rounds = sorted(set(target_rounds + [current_round]))
-    matches = preparar_partidas(api, matches_rounds, temporada=temporada)
-    _save_yearly_dataset(
-        matches,
-        result,
-        "partidas",
-        MatchesDataset(season=temporada, data_dir=DATA_DIR),
-    )
+        return
+    
+    matches = preparar_partidas(api, [current_round], temporada=season)
+    matches_file = MatchesDataset(season=season).write(matches)    
+    log.info("Partidas salvas: %s -> %s", len(matches), matches_file)
 
     market = get_current_market(api)
     if not market.empty:
-        market_file = CurrentMarketDataset(data_dir=DATA_DIR).write(market)
-        result.files["mercado_atual"] = market_file
+        market_file = CurrentMarketDataset(data_dir=DATA_DIR).write(market)        
         log.info("Mercado atual salvo: %s atletas -> %s", len(market), market_file)
 
     if token:
-        gato_api = GatoMestreAPI(token=token, temporada=temporada)        
-        odds = get_odds(gato_api, api.clubes(), matches_rounds, temporada=temporada)
-        _save_yearly_dataset(
-            odds,
-            result,
-            "odds",
-            OddsDataset(season=temporada, data_dir=DATA_DIR),
-        )
+        gato_api = GatoMestreAPI(token=token, temporada=season)        
+        odds = get_odds(gato_api, api.clubes(), [current_round], temporada=season)
+        odds_file =     OddsDataset(season=season).write(odds)
+        log.info("Odds salvas: %s -> %s", len(odds), odds_file)
     else:
         log.info("CARTOLA_TOKEN nao definido - odds nao coletadas.")
 
-    user_means = get_cartola_users_mean(api, target_rounds)
+    user_means = get_cartola_users_mean(api, [previous_round])
     if not user_means.empty:
-        means_file = CartolaUsersMeanDataset(data_dir=DATA_DIR).write(user_means)
-        result.files["medias_cartoleiros"] = means_file
+        user_means_file = CartolaUsersMeanDataset(data_dir=DATA_DIR).write(user_means)
+        log.info("Médias dos cartoleiros salvas: %s -> %s", len(user_means), user_means_file)
 
     league_brackets = get_league_brackets(api, ligas or DEFAULT_LIGAS)
     if not league_brackets.empty:
-        brackets_file = LeagueBracketsDataset(data_dir=DATA_DIR).write(league_brackets)
-        result.files["chaves_ligas"] = brackets_file
-
-    return result
+        league_brackets_file = LeagueBracketsDataset(data_dir=DATA_DIR).write(league_brackets)
+        log.info("Chaves das ligas salvas: %s -> %s", len(league_brackets), league_brackets_file)
