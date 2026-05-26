@@ -2,24 +2,27 @@
 Run all Cartola data collectors and build merged parquet datasets.
 
 Examples:
-    python collect_all_data.py
-    python collect_all_data.py --historic-years 2024 2025 --current-season 2026
-    python collect_all_data.py --merge-only
+    python collect_latest_data.py
+    python collect_latest_data.py --current-season 2026
+    python collect_latest_data.py --merge-only
 """
 
 import argparse
 import logging
 import os
-import re
-from collections import defaultdict
 from pathlib import Path
 
 import pandas as pd
 from dotenv import load_dotenv
 
-from cartola_data import CURRENT_SEASON, DATA_DIR, collect_current_season
+from cartola_data import CURRENT_SEASON, DATA_DIR, collect_latest_api_data
 from cartola_data.api import CartolaAPI
-from cartola_data.current import get_current_round, get_players_data_from_cartola_api, missing_rounds
+from cartola_data.current import (
+    get_current_round,
+    get_round_players_data_from_cartola,
+    missing_rounds,
+)
+from cartola_data.file_manager import FileManager, PlayersDataset
 from cartola_data.historic import get_players_data_from_caRtola, import_historic_season
 from cartola_data.transforms import deduplicate_by_key
 
@@ -28,7 +31,6 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
-YEARLY_PARQUET_RE = re.compile(r"^(?P<dataset>.+)_(?P<year>\d{4})\.parquet$")
 DEFAULT_HISTORIC_YEARS = list(range(2023, CURRENT_SEASON))
 MERGE_KEYS = {
     "jogadores_por_rodada": ["temporada", "rodada", "atleta_id"],
@@ -39,12 +41,10 @@ MERGE_KEYS = {
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run historic and current Cartola collectors, then merge yearly parquets."
+        description="Get latest Cartola data, then merge it to the current season parquet."
     )
-    parser.add_argument("--historic-years", type=int, nargs="+", default=DEFAULT_HISTORIC_YEARS)
+    
     parser.add_argument("--current-season", type=int, default=CURRENT_SEASON)
-    parser.add_argument("--skip-historic", action="store_true")
-    parser.add_argument("--skip-current", action="store_true")
     parser.add_argument("--skip-gato", action="store_true")
     parser.add_argument("--skip-players", action="store_true")
     parser.add_argument("--skip-merge", action="store_true")
@@ -94,69 +94,41 @@ def find_yearly_parquets(
     data_dir: Path,
     dataset_names: list[str] | None = None,
 ) -> dict[str, list[tuple[int, Path]]]:
-    selected = set(dataset_names or [])
-    groups: dict[str, list[tuple[int, Path]]] = defaultdict(list)
+    return FileManager(data_dir).find_yearly_parquets(dataset_names)
 
-    for parquet_path in data_dir.glob("*.parquet"):
-        match = YEARLY_PARQUET_RE.match(parquet_path.name)
-        if not match:
-            continue
 
-        dataset = match.group("dataset")
-        if selected and dataset not in selected:
-            continue
+def get_previous_round_players_data(api, current_round: int) -> bool:
+    target_round = current_round - 1
+    players_dataset = PlayersDataset(season=CURRENT_SEASON, data_dir=DATA_DIR)
+    players = players_dataset.read_or_empty()
 
-        groups[dataset].append((int(match.group("year")), parquet_path))
+    round_to_collect = missing_rounds(players, [target_round])
+    if not round_to_collect:
+        return
+    
+    new_players = get_players_data_from_caRtola(CURRENT_SEASON, [round_to_collect])
 
-    return groups
-
-def get_players_data(api, current_round: int, season: int) -> bool:
-    target_rounds = list(range(1, current_round))
-    players_file = DATA_DIR / f"jogadores_por_rodada_{season}.parquet"
-    if players_file.exists():
-        players = pd.read_parquet(players_file)
-    else:
-        players = pd.DataFrame()
-
-    rounds_to_collect = missing_rounds(players, target_rounds)
-    if rounds_to_collect:
-        new_players = get_players_data_from_caRtola(season, rounds_to_collect)
-        collected_frames = []
-        archived_rounds: set[int] = set()
-        if not new_players.empty:
-            collected_frames.append(new_players)
-            archived_rounds = set(new_players["rodada"].dropna().astype(int).unique())
-
-        api_rounds = [
-            round_number
-            for round_number in rounds_to_collect
-            if round_number not in archived_rounds
-        ]
-        if api_rounds:
-            log.info("Coletando %s rodadas novas pela API do cartola.", len(api_rounds))
-            api_players = get_players_data_from_cartola_api(api, api_rounds, temporada=season)
-            if not api_players.empty:
-                collected_frames.append(api_players)
-
-        new_players = (
-            pd.concat(collected_frames, ignore_index=True)
-            if collected_frames
-            else pd.DataFrame()
+    if new_players.empty:
+        log.info("Coletando rodada %s pela API do cartola.", round_to_collect)
+        new_players = get_round_players_data_from_cartola(
+            api,
+            round_to_collect,
+            temporada=CURRENT_SEASON
         )
-        if new_players.empty:
-            raise RuntimeError(
-                f"Nenhum dado de jogadores coletado para {season}; "
-                f"rodadas solicitadas: {rounds_to_collect}"
-            )
 
-        players = pd.concat([players, new_players], ignore_index=True)
-        log.info(
-                "Historico %s salvo: %s rodadas, %s atletas -> %s",
-                season,
-                players["rodada"].nunique(),
-                players["atleta_id"].nunique(),
-                players_file,
-            )
+    if new_players.empty:
+        raise RuntimeError(
+            f"Dados de jogadores para rodada {round_to_collect} ainda não estão disponíveis."
+        )
+
+    players = pd.concat([players, new_players], ignore_index=True)
+    log.info(
+            "Historico %s salvo: %s rodadas, %s atletas -> %s",
+            CURRENT_SEASON,
+            players["rodada"].nunique(),
+            players["atleta_id"].nunique(),
+            players_dataset.path,
+        )
     
     if not players.empty:
         players = deduplicate_by_key(
@@ -164,10 +136,8 @@ def get_players_data(api, current_round: int, season: int) -> bool:
             ["temporada", "rodada", "atleta_id"],
             prefer_played=True,
         )
-    else:
-        raise RuntimeError(f"Nenhum dado de jogadores disponivel para {season}.")
 
-    players.to_parquet(players_file, index=False)
+    players_dataset.write(players)
     return True
             
 
@@ -176,13 +146,14 @@ def merge_partitioned_parquets(
     dataset_names: list[str] | None = None,
 ) -> dict[str, Path]:
     """Merge data/<dataset>_<year>.parquet into data/<dataset>.parquet."""
+    file_manager = FileManager(data_dir)
     merged_files = {}
-    groups = find_yearly_parquets(data_dir, dataset_names)
+    groups = file_manager.find_yearly_parquets(dataset_names)
 
     for dataset, yearly_files in sorted(groups.items()):
         frames = []
         for year, parquet_path in sorted(yearly_files):
-            df = pd.read_parquet(parquet_path)
+            df = file_manager.read_parquet(parquet_path)
             frames.append(add_year_if_missing(df, year))
 
         if not frames:
@@ -192,8 +163,7 @@ def merge_partitioned_parquets(
         before_dedupe = len(merged_df)
         merged_df = deduplicate_merged_dataset(dataset, merged_df)
         merged_df = sort_for_readability(merged_df)
-        output_path = data_dir / f"{dataset}.parquet"
-        merged_df.to_parquet(output_path, index=False)
+        output_path = file_manager.dataset(dataset).write(merged_df)
         merged_files[dataset] = output_path
         log.info(
             "Merged %s yearly files into %s (%s rows)",
@@ -210,25 +180,16 @@ def merge_partitioned_parquets(
 def run_collectors(args: argparse.Namespace) -> None:
     token = os.environ.get("CARTOLA_TOKEN")
 
-    if not args.skip_historic:
-        for year in args.historic_years:
-            import_historic_season(
-                year=year,                
-                token=token,
-                collect_gato_data=not args.skip_gato,
-                collect_players_data=not args.skip_players,
-            )
-
     if not args.skip_current:
         api = CartolaAPI(token=token)
         current_round = get_current_round(api)
-        get_players_data(api, current_round, args.current_season)
-        collect_current_season(
+        get_previous_round_players_data(api, current_round)
+        collect_latest_api_data(
             api=api,
             current_round=current_round,
-            temporada=args.current_season,            
-            token=token,            
-        )
+            season=args.current_season,            
+            token=token
+        )        
 
 
 def main() -> None:

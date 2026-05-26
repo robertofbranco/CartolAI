@@ -18,7 +18,7 @@ from .config import (
 )
 from .current import (
     CurrentSeasonCollectionResult,
-    collect_current_season,
+    collect_latest_api_data,
     get_cartola_users_mean,
     get_current_market,
     get_current_round,
@@ -67,7 +67,7 @@ __all__ = [
     "OddsDataset",
     "PlayersDataset",
     "CurrentSeasonCollectionResult",
-    "collect_current_season",
+    "collect_latest_api_data",
     "deduplicate_by_key",
     "get_cartola_users_mean",
     "get_current_market",
