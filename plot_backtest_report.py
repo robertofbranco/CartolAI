@@ -245,6 +245,15 @@ def plot_backtest_report(
             "#4A148C",
             (18, 12),
         )
+    if not medias_cartoleiros_plot.empty:
+        annotate_point_values(
+            ax1,
+            medias_cartoleiros_plot["rodada"],
+            medias_cartoleiros_plot["media_cartoleiros"],
+            "#2E7D32",
+            (18, -18),
+        )
+    
     ax1.set_xlabel("Rodada")
     ax1.set_ylabel("Pontos")
     ax1.margins(y=0.15)
