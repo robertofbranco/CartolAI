@@ -178,13 +178,13 @@ def run_collectors(args: argparse.Namespace) -> None:
     
     api = CartolaAPI(token=token)
     current_round = get_current_round(api)
-    get_previous_round_players_data(api, current_round)
     collect_latest_api_data(
         api=api,
         current_round=current_round,
-        season=args.current_season,            
+        season=args.current_season,
         token=token
     )
+    get_previous_round_players_data(api, current_round)
 
 
 def main() -> None:

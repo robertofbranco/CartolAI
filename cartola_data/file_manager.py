@@ -158,7 +158,7 @@ class PlayersDataset(DatasetFile):
 
 
 class MatchesDataset(DatasetFile):
-    name = "partidas_com_xG"
+    name = "partidas"
 
 
 class OddsDataset(DatasetFile):
