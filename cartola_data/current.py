@@ -345,6 +345,8 @@ def get_league_brackets(api: CartolaAPI, ligas: list[str]) -> pd.DataFrame:
                         "vencedor_id": chave.get("vencedor_id"),
                         "time_mandante_id": chave.get("time_mandante_id"),
                         "time_visitante_id": chave.get("time_visitante_id"),
+                        "time_mandante_pontuacao": chave.get("time_mandante_pontuacao", 0),
+                        "time_visitante_pontuacao": chave.get("time_visitante_pontuacao", 0),
                         "pontos": max(
                             chave.get("time_mandante_pontuacao", 0),
                             chave.get("time_visitante_pontuacao", 0),
