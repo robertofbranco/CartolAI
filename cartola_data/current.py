@@ -11,7 +11,6 @@ from .config import CURRENT_SEASON, DATA_DIR, DEFAULT_LIGAS
 from .file_manager import (
     CartolaUsersMeanDataset,
     CurrentMarketDataset,
-    DatasetFile,
     LeagueBracketsDataset,
     MatchesDataset,
     OddsDataset,
@@ -364,11 +363,40 @@ def _has_round(df: pd.DataFrame, rodada: int) -> bool:
     return "rodada" in df.columns and rodada in df["rodada"].dropna().astype(int).unique()
 
 
+def update_odds(api: CartolaAPI, current_round: int, season: int, token: str):
+    if not token:
+        log.info("CARTOLA_TOKEN nao definido - odds nao coletadas.")
+        return
+    
+    odds_dataset = OddsDataset(season=season)
+    odds_df = odds_dataset.read_or_empty()
+    gato_api = GatoMestreAPI(token=token, temporada=season)
+    new_odds = get_odds(gato_api, api.clubes(), [current_round], temporada=season)
+    if new_odds.empty:
+        log.warning(f"Odds indisponiveis para a rodada {current_round}")
+    elif _has_round(odds_df, current_round):
+        odds_df = odds_df[~((odds_df["temporada"] == season) & (odds_df["rodada"] == current_round))]
+        odds_df = pd.concat([odds_df, new_odds])
+        odds_file = odds_dataset.write(odds_df)
+    else:
+        odds_file = odds_dataset.append(new_odds)
+
+    log.info("Odds salvas: %s -> %s", len(new_odds), odds_file)
+
+
+def update_market(api: CartolaAPI):
+    market = get_current_market(api)
+    if market.empty:
+        log.warning("Mercado atual vazio, nao sera atualizado.")
+
+    market_file = CurrentMarketDataset().write(market)
+    log.info("Mercado atual salvo: %s atletas -> %s", len(market), market_file)
+
+
 def collect_latest_api_data(
     api: CartolaAPI,
     current_round: int,
-    season: int = CURRENT_SEASON,
-    token: str | None = None,
+    season: int = CURRENT_SEASON,    
 ):
     """Collect live Cartola/Gato Mestre data and persist project datasets."""
     previous_round = current_round - 1    
@@ -376,28 +404,13 @@ def collect_latest_api_data(
     if not current_round:
         log.error("Nenhuma rodada para coletar.")
         return
-    
+        
     matches_dataset = MatchesDataset(season=season)
     matches_df = matches_dataset.read_or_empty()
     if not _has_round(matches_df, current_round):
         new_matches = preparar_partidas(api, [current_round], temporada=season)
         matches_file = matches_dataset.append(new_matches)
         log.info("Partidas salvas: %s -> %s", len(new_matches), matches_file)
-
-    market = get_current_market(api)
-    if not market.empty:
-        market_file = CurrentMarketDataset().write(market)
-        log.info("Mercado atual salvo: %s atletas -> %s", len(market), market_file)
-
-    odds_dataset = OddsDataset(season=season)
-    odds_df = odds_dataset.read_or_empty()
-    if token and not _has_round(odds_df, current_round):
-        gato_api = GatoMestreAPI(token=token, temporada=season)
-        new_odds = get_odds(gato_api, api.clubes(),[current_round], temporada=season)
-        odds_file = odds_dataset.append(new_odds)
-        log.info("Odds salvas: %s -> %s", len(new_odds), odds_file)
-    else:
-        log.info("CARTOLA_TOKEN nao definido - odds nao coletadas.")
 
     users_mean_dataset = CartolaUsersMeanDataset()
     users_mean_df = users_mean_dataset.read_or_empty()

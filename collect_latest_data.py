@@ -20,7 +20,8 @@ from cartola_data.api import CartolaAPI
 from cartola_data.current import (
     get_current_round,
     get_round_players_data_from_cartola,
-    missing_rounds,
+    update_market,
+    update_odds,
 )
 from cartola_data.file_manager import FileManager, PlayersDataset
 from cartola_data.historic import get_players_data_from_caRtola, import_historic_season
@@ -43,9 +44,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Get latest Cartola data, then merge it to the current season parquet."
     )
-    
-    parser.add_argument("--current-season", type=int, default=CURRENT_SEASON)
-    parser.add_argument("--skip-gato", action="store_true")
+    parser.add_argument("--mercado-only", action="store_true")
     parser.add_argument("--skip-players", action="store_true")
     parser.add_argument("--skip-merge", action="store_true")
     parser.add_argument("--merge-only", action="store_true")
@@ -175,15 +174,19 @@ def merge_partitioned_parquets(
 
 def run_collectors(args: argparse.Namespace) -> None:
     token = os.environ.get("CARTOLA_TOKEN")
-    
-    api = CartolaAPI(token=token)
+    api = CartolaAPI()
     current_round = get_current_round(api)
+    update_market(api)
+    update_odds(api, current_round, CURRENT_SEASON, token)
+    if args.mercado_only:        
+        return
+
     collect_latest_api_data(
         api=api,
         current_round=current_round,
-        season=args.current_season,
-        token=token
+        season=CURRENT_SEASON
     )
+    
     get_previous_round_players_data(api, current_round)
 
 
@@ -193,7 +196,7 @@ def main() -> None:
     if not args.merge_only:
         run_collectors(args)
 
-    if not args.skip_merge:
+    if not args.skip_merge and not args.mercado_only:
         merged_files = merge_partitioned_parquets(
             data_dir=DATA_DIR,
             dataset_names=args.merge_datasets,
