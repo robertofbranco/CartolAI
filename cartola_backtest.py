@@ -18,7 +18,7 @@ import argparse
 import sys
 import pandas as pd
 
-from cartola_data.config import CAPTAIN_BONUS, CURRENT_SEASON, DATA_DIR, RISK_TUNING
+from cartola_data.config import CAPTAIN_BONUS, CURRENT_SEASON, DATA_DIR, TUNING
 from cartola_data.datasets import read_datasets
 from feature_engineering import build_features
 from pathlib import Path
@@ -27,22 +27,25 @@ from plot_backtest_report import (
     load_chaves_ligas as _load_chaves_ligas,
     load_medias_cartoleiros as _load_medias_cartoleiros,
     plot_backtest_report,
+    plot_playoff_benchmark,
 )
 
 from cartola_team_builder import (
     assign_captain,
     apply_reserve_substitutions,
-    available_model_strategies,
     build_team,
-    DEFAULT_MODEL_STRATEGY,
     lineup_output_table,
     merge_target_round_odds,
-    feature_cols_from_models,
-    mean_mae_from_models,
     score_with_captain_bonus,
-    train_models_by_position,
     ODDS_COLS,
     CAPTAIN_COL
+)
+from cartola_model_training import (
+    DEFAULT_MODEL_STRATEGY,
+    available_model_strategies,
+    feature_cols_from_models,
+    mean_mae_from_models,
+    train_models_by_position,
 )
 
 from cartola_data.config import (
@@ -686,6 +689,11 @@ def gerar_relatorio(resultados: list[ResultadoRodada], output_dir: str | Path = 
         df,
         mae_posicao_df,
         output_dir / "backtest_report.png",
+        data_dir=DATA_DIR,
+    )
+    plot_playoff_benchmark(
+        df,
+        output_dir / "backtest_playoff_benchmark.png",
         data_dir=DATA_DIR,
     )
 

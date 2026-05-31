@@ -14,11 +14,16 @@ from cartola_data.config import DATA_DIR, POSICAO_NOME
 matplotlib.use("Agg")
 import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
+from matplotlib.ticker import MaxNLocator
 
 
 log = logging.getLogger(__name__)
 
 RENAN_FLICK_POINTS_BY_ROUND = {
+    6: 62.4,
+    7: 63.77,
+    8: 51.96,
+    9: 46.38,
     10: 54.15,
     11: 87.46,
     12: 50.65,
@@ -225,6 +230,10 @@ def annotate_point_values(ax, x_values, y_values, color, offset) -> None:
         )
 
 
+def use_integer_x_ticks(ax) -> None:
+    ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+
+
 def plot_backtest_report(
     resultados_df: pd.DataFrame,
     mae_posicao_df: pd.DataFrame | None,
@@ -334,8 +343,9 @@ def plot_backtest_report(
             (18, -18),
         )
     
-    ax1.set_xlabel("Rodada")
+    ax1.set_xlabel("Rodada")    
     ax1.set_ylabel("Pontos")
+    use_integer_x_ticks(ax1)
     ax1.margins(y=0.15)
     ax1.legend(fontsize=8)
     ax1.grid(True, alpha=0.3)
@@ -507,6 +517,7 @@ def plot_playoff_benchmark(
     ax1.set_title(f"Pontuacao por rodada vs. {scope_label}")
     ax1.set_xlabel("Rodada")
     ax1.set_ylabel("Pontos")
+    use_integer_x_ticks(ax1)
     ax1.margins(y=0.15)
     ax1.legend(fontsize=8, ncol=3)
     ax1.grid(True, alpha=0.3)
