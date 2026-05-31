@@ -9,7 +9,6 @@ DATA_DIR = PROJECT_ROOT / "data"
 DATA_DIR.mkdir(exist_ok=True)
 
 CURRENT_SEASON = 2026
-BUDGET = 140.0
 CAPTAIN_BONUS = 1.5
 CAPTAIN_POS = [4, 5]
 
@@ -155,13 +154,13 @@ TUNING = {
     "n_jobs": -1,
 }
 
-RISK_TUNING = {
-    "n_estimators": 300,
+STABLE_TUNING = {
+    "n_estimators": 500,
     "max_depth": 8,
-    "min_samples_leaf": 10,
+    "min_samples_leaf": 20,
     "random_state": 42,
     "min_samples_split": 2,
-    "max_features": "sqrt",
+    "max_features": 0.6,
     "n_jobs": -1,
 }
 
