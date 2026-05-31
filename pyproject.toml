@@ -23,6 +23,7 @@ dependencies = [
 
 [project.scripts]
 cartola-backtest = "cartola_backtest:main"
+cartola-plot-backtest-report = "plot_backtest_report:main"
 cartola-collect-all = "collect_all_data:main"
 cartola-collector = "cartola_collector:main"
 cartola-import-historic = "import_historic_data:main"
@@ -33,8 +34,10 @@ packages = ["cartola_data"]
 py-modules = [
     "cartola_backtest",
     "cartola_collector",
+    "cartola_model_training",
     "cartola_team_builder",
     "collect_all_data",
     "feature_engineering",
     "import_historic_data",
+    "plot_backtest_report",
 ]
