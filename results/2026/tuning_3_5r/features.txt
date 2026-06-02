@@ -1,0 +1,91 @@
+FEATURE_SCOUTS = [
+    "scout_G", "scout_A", "scout_FS",
+    "scout_FD", "scout_FF", "scout_FT",
+    "scout_DS", "scout_FC", "scout_CA",
+    "scout_GS", "scout_DE", "scout_SG",
+    "scout_V"
+]
+
+GOL_FEATURE_COLS = [
+    "clube_enc", "clube_adv_enc",
+    "preco_lag1", #"pts_ultima_rodada",
+    "regularidade_5r",
+    "std_pts_3r", "std_pts_5r",
+    "media_pts_3r", "media_pts_5r", "media_pts_10r",
+    "avg_pts_mando_3r", "avg_pts_mando_5r",
+    "prob_draw", "prob_loss",
+    "mando",
+    "gols_sofridos_clube_mando_3r", "gols_feitos_adv_mando_3r",
+    # Scouts
+    "scout_GS_5r", "scout_CA_5r", "scout_FC_5r",
+    "scout_DE_5r", "scout_SG_5r", "scout_G_5r",
+]
+
+TEC_FEATURE_COLS = [
+    "clube_enc",
+    "clube_adv_enc",
+    "media_lag",
+    "mando",
+    "prob_win", "prob_draw",
+    # How the player performed in the last matches
+    "preco_lag1",
+    "pts_ultima_rodada",
+    "std_pts_3r", "std_pts_5r", "std_pts_10r",
+    "media_pts_3r", "media_pts_5r", "media_pts_10r",
+    "media_pts_delta_3_5r", "media_pts_delta_3_10r", "media_pts_delta_5_10r",
+    "regularidade_5r",
+    # How the player performs at home vs away
+    "avg_pts_casa_3r", "avg_pts_fora_3r",
+    "avg_pts_casa_5r", "avg_pts_fora_5r",
+    # How the club performed in the last matches    
+    "gols_feitos_clube_3r", "gols_sofridos_clube_3r",
+    "gols_feitos_adv_3r", "gols_sofridos_adv_3r",
+    "gols_feitos_clube_5r", "gols_sofridos_clube_5r",
+    "gols_feitos_adv_5r", "gols_sofridos_adv_5r",
+    "pontos_conquistados_clube_3r", "pontos_cedidos_adv_3r",
+    "pontos_conquistados_clube_5r", "pontos_cedidos_adv_5r",
+    # How the club performs away vs at home
+    "gols_feitos_clube_mando_5r", "gols_sofridos_clube_mando_5r",
+    "gols_feitos_adv_mando_5r", "gols_sofridos_adv_mando_5r",
+    # Scouts
+    "scout_V_5r",
+]
+
+FEATURE_COLS = [
+    "clube_enc", "clube_adv_enc",
+    "media_lag", "regularidade_5r",
+    "prob_win", "prob_draw", "prob_loss",
+
+    # How the player performed in the last matches
+    "preco_lag1",
+    "pts_ultima_rodada",
+    "std_pts_3r", "std_pts_5r", #"std_pts_10r",
+    "media_pts_3r", "media_pts_5r", "media_pts_10r",
+    "media_pts_delta_3_5r", "media_pts_delta_3_10r", #"media_pts_delta_5_10r",    
+
+    # How the player performs at home vs away
+    "avg_pts_mando_3r", "avg_pts_mando_5r"
+
+    # ---
+
+    # How the club performed in the last matches
+    "gols_feitos_clube_3r", "gols_sofridos_clube_3r",
+    "gols_feitos_adv_3r", "gols_sofridos_adv_3r",
+    "gols_feitos_clube_5r", "gols_sofridos_clube_5r",
+    "gols_feitos_adv_5r", "gols_sofridos_adv_5r",
+    "pontos_conquistados_clube_3r", "pontos_cedidos_adv_3r",
+    "pontos_conquistados_clube_5r", "pontos_cedidos_adv_5r",
+    
+    # How the club performs away vs at home
+    "mando",
+    "gols_feitos_clube_mando_3r", "gols_sofridos_clube_mando_3r",
+    "gols_feitos_adv_mando_3r", "gols_sofridos_adv_mando_3r",
+    "gols_feitos_clube_mando_5r", "gols_sofridos_clube_mando_5r",
+    "gols_feitos_adv_mando_5r", "gols_sofridos_adv_mando_5r",
+
+    # Scouts
+    "scout_G_5r", "scout_A_5r", "scout_FS_5r",
+    "scout_FD_5r", "scout_FF_5r", "scout_FT_5r",    
+    "scout_DS_5r", "scout_FC_5r", "scout_CA_5r",
+    "scout_GS_5r", "scout_DE_5r", "scout_SG_5r",
+]

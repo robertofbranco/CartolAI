@@ -1,0 +1,7 @@
+  Rodadas testadas:        8
+  Pts modelo  (média):     86.81  ±28.05
+  Pts teto    (média):     180.05
+  Eficiência  (média):     48.0%
+  MAE médio:               1.597 pts
+  Melhor rodada:           R13 (141.7 pts)
+  Pior rodada:             R10 (52.3 pts)
