@@ -120,17 +120,62 @@ def get_current_market(api: CartolaAPI) -> pd.DataFrame:
     )
 
 
+def _season_clube_ids(temporada: int | None, data_dir: Path = DATA_DIR) -> set[int]:
+    if temporada is None:
+        return set()
+
+    clube_ids: set[int] = set()
+    for parquet in [
+        data_dir / f"jogadores_por_rodada_{temporada}.parquet",
+        data_dir / f"partidas_{temporada}.parquet",
+    ]:
+        if not parquet.exists():
+            continue
+
+        try:
+            df = pd.read_parquet(parquet, columns=["clube_id"])
+        except Exception as exc:
+            log.warning("Nao foi possivel ler clubes de %s: %s", parquet, exc)
+            continue
+
+        clube_ids.update(df["clube_id"].dropna().astype(int).unique().tolist())
+
+    return clube_ids
+
+
+def _build_abbr_to_clube_id(
+    clubes_raw: dict,
+    temporada: int | None = None,
+    data_dir: Path = DATA_DIR,
+) -> dict[str, int]:
+    """Build an abbreviation map while avoiding stale duplicate club IDs."""
+    abbr_to_id: dict[str, int] = {}
+    season_clube_ids = _season_clube_ids(temporada, data_dir=data_dir)
+
+    for club_id, club in clubes_raw.items():
+        abbr = (club.get("abreviacao") or "").upper()
+        if not abbr:
+            continue
+
+        clube_id = int(club_id)
+        if season_clube_ids and clube_id in season_clube_ids:
+            abbr_to_id[abbr] = clube_id
+
+    for club_id, club in clubes_raw.items():
+        abbr = (club.get("abreviacao") or "").upper()
+        if abbr:
+            abbr_to_id.setdefault(abbr, int(club_id))
+
+    return abbr_to_id
+
+
 def get_odds(
     gato_api: GatoMestreAPI,
     clubes_raw: dict,
     rodadas_alvo: list[int],
     temporada: int | None = None,
 ) -> pd.DataFrame:
-    abbr_to_id = {
-        (club.get("abreviacao") or "").upper(): int(club_id)
-        for club_id, club in clubes_raw.items()
-        if club.get("abreviacao")
-    }
+    abbr_to_id = _build_abbr_to_clube_id(clubes_raw, temporada=temporada)
 
     rows = []
     for rodada in tqdm(rodadas_alvo, desc="Coletando odds"):
@@ -206,12 +251,16 @@ def preparar_partidas(
                 "clube_id": casa,
                 "mando": 1,
                 "clube_adversario_id": fora,
+                "gols_feitos_clube": partida.get("placar_oficial_mandante"),
+                "gols_sofridos_clube": partida.get("placar_oficial_visitante"),
             }
             away = {
                 "rodada": rodada,
                 "clube_id": fora,
                 "mando": -1,
                 "clube_adversario_id": casa,
+                "gols_feitos_clube": partida.get("placar_oficial_visitante"),
+                "gols_sofridos_clube": partida.get("placar_oficial_mandante"),
             }
             if temporada is not None:
                 home["temporada"] = temporada

@@ -8,7 +8,14 @@ from sklearn.metrics import mean_absolute_error
 
 from feature_engineering import FEATURE_COLS, build_features
 
-from cartola_data.config import DATA_DIR, FORMATION, POSICAO_NOME, STATUS
+from cartola_data.config import (
+    CURRENT_SEASON,
+    DATA_DIR,
+    FORMATION,
+    POSICAO_NOME,
+    STATUS,
+    TEC_ODDS_FILTER,
+)
 from cartola_data.api import CartolaAPI
 from cartola_data.datasets import read_datasets
 
@@ -16,6 +23,9 @@ load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
+
+ODDS_COLS = ["prob_win", "prob_draw", "prob_loss"]
+TEC_POSITION_ID = 6
 
 
 def train_model(df: pd.DataFrame, round_limit: int, season: int | None = None):
@@ -104,10 +114,69 @@ def mean_mae_from_models(models_by_position: dict) -> float:
     return float(sum(maes) / len(maes))
 
 
+def merge_target_round_odds(
+    market_df: pd.DataFrame,
+    odds_df: pd.DataFrame | None,
+    season: int,
+    rodada_alvo: int,
+) -> pd.DataFrame:
+    """Attach match odds for the round being predicted."""
+    market_df = market_df.copy()
+    if odds_df is None or odds_df.empty:
+        return market_df
+
+    odds_keys = ["temporada", "rodada", "clube_id"]
+    if not set(odds_keys + ODDS_COLS).issubset(odds_df.columns):
+        return market_df
+
+    round_odds = odds_df.loc[
+        (odds_df["temporada"] == season)
+        & (odds_df["rodada"] == rodada_alvo),
+        odds_keys + ODDS_COLS,
+    ].drop_duplicates(odds_keys)
+    if round_odds.empty:
+        for col in ODDS_COLS:
+            if col in market_df.columns:
+                market_df[col] = pd.NA
+        return market_df
+
+    for col in ODDS_COLS:
+        if col in market_df.columns:
+            market_df = market_df.drop(columns=col)
+
+    market_df = market_df.merge(
+        round_odds,
+        on=odds_keys,
+        how="left",
+    )
+
+    return market_df
+
+
+def apply_tec_odds_filter(
+    position_pool: pd.DataFrame,
+    min_prob_win: float,
+    max_prob_loss: float,
+) -> pd.DataFrame:
+    """Avoid selecting high-risk TEC picks when safer candidates exist."""
+    if not set(["prob_win", "prob_loss"]).issubset(position_pool.columns):
+        return position_pool
+
+    eligible = position_pool[
+        (position_pool["prob_win"] >= min_prob_win)
+        & (position_pool["prob_loss"] <= max_prob_loss)
+    ]
+    if eligible.empty:
+        return position_pool
+
+    return eligible
+
+
 def build_team(
     market_df: pd.DataFrame,
     models_by_position: dict,
-    formation: dict = FORMATION
+    formation: dict = FORMATION,
+    tec_odds_filter: dict | None = TEC_ODDS_FILTER,
 ) -> pd.DataFrame:
     df = market_df[market_df['status_id'] == STATUS["Provavel"]].copy()
     df["pontos_previstos"] = 0.0
@@ -129,6 +198,12 @@ def build_team(
 
     for position, n_players in formation.items():        
         position_pool = df[df["posicao_id"] == position].copy()
+        if position == TEC_POSITION_ID and tec_odds_filter:
+            position_pool = apply_tec_odds_filter(
+                position_pool=position_pool,
+                min_prob_win=tec_odds_filter["min_prob_win"],
+                max_prob_loss=tec_odds_filter["max_prob_loss"],
+            )
         chosen = []
 
         for _, player in position_pool.iterrows():            
@@ -168,7 +243,12 @@ def imprimir_time(time_df: pd.DataFrame):
     print("="*60)
 
 
-def prepare_market_data(df_feat: pd.DataFrame, rodada_alvo: int) -> pd.DataFrame:
+def prepare_market_data(
+    df_feat: pd.DataFrame,
+    rodada_alvo: int,
+    season: int = CURRENT_SEASON,
+    df_odds: pd.DataFrame | None = None,
+) -> pd.DataFrame:
     market_file = DATA_DIR / "mercado_atual.parquet"
     market_df = pd.read_parquet(market_file)
 
@@ -178,13 +258,26 @@ def prepare_market_data(df_feat: pd.DataFrame, rodada_alvo: int) -> pd.DataFrame
     
     clubes_map = {int(k): v["nome"] for k, v in api.clubes().items()}
     market_df["clube_nome"] = market_df["clube_id"].map(clubes_map).fillna("")
+    market_df["temporada"]  = season
     market_df["rodada"]     = rodada_alvo
 
-    ultima_feat = (
-        df_feat[df_feat["rodada"] == df_feat["rodada"].max()]
-        [["atleta_id"] + [c for c in FEATURE_COLS if c not in market_df.columns]]
-        .drop_duplicates("atleta_id")
-    )
+    feature_cols = ["atleta_id"] + [c for c in FEATURE_COLS if c not in market_df.columns]
+    previous_features = df_feat.loc[
+        (df_feat["temporada"] == season)
+        & (df_feat["rodada"] < rodada_alvo)
+    ].copy()
+    sort_cols = ["temporada", "rodada"]
+
+    if previous_features.empty:
+        ultima_feat = pd.DataFrame(columns=feature_cols)
+    else:
+        ultima_feat = (
+            previous_features
+            .sort_values(sort_cols)
+            [feature_cols]
+            .drop_duplicates("atleta_id", keep="last")
+        )
+
     market_df = market_df.merge(ultima_feat, on="atleta_id", how="left")
     for col in FEATURE_COLS:
         if col in market_df.columns:
@@ -192,10 +285,16 @@ def prepare_market_data(df_feat: pd.DataFrame, rodada_alvo: int) -> pd.DataFrame
                 market_df.groupby("posicao_id")[col].transform("median")
             ).fillna(0)
 
+    market_df = merge_target_round_odds(market_df, df_odds, season, rodada_alvo)
+    for col in ODDS_COLS:
+        if col in market_df.columns:
+            market_df[col] = market_df[col].fillna(1 / 3)
+
     return market_df
 
 
 def main():
+    rodada_alvo = 16
     df_players_per_round, df_matches, df_odds = read_datasets()
 
     log.info(f"Histórico carregado: {df_players_per_round['rodada'].nunique()} rodadas, "
@@ -203,12 +302,16 @@ def main():
     
     features = build_features(df_players_per_round, df_matches, df_odds)
 
-    models_by_pos = train_models_by_position(features, 15)
+    models_by_pos = train_models_by_position(
+        features,
+        round_limit=rodada_alvo,
+        season=CURRENT_SEASON,
+    )
     feature_cols = feature_cols_from_models(models_by_pos)
     mae = mean_mae_from_models(models_by_pos)
     log.info(f"MAE médio por posição: {mae:.3f} pts | Features: {len(feature_cols)}")
 
-    market_data = prepare_market_data(features, 16)
+    market_data = prepare_market_data(features, rodada_alvo, df_odds=df_odds)
 
     team = build_team(market_data, models_by_pos)
 

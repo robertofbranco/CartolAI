@@ -8,7 +8,7 @@ import pandas as pd
 import requests
 from tqdm import tqdm
 
-from .api import CartolaAPI, GatoMestreAPI
+from .api import CartolaAPI, CbfAPI, GatoMestreAPI
 from .config import DATA_DIR
 from .transforms import deduplicate_by_key
 
@@ -91,6 +91,49 @@ NOME_TO_ABBR = {
     "Cuiaba": "CUI",
     "Avai": "AVA",
     "Ceara": "CEA",
+}
+
+CBF_NOME_TO_ABBR = {
+    "America Fc Saf": "AME",
+    "America Mineiro": "AME",
+    "America Saf": "AME",
+    "America": "AME",
+    "Atletico Goianiense": "ACG",
+    "Atletico Goianiense Saf": "ACG",
+    "Atletico Mineiro": "CAM",
+    "Athletico Paranaense": "CAP",
+    "Bahia": "BAH",
+    "Botafogo": "BOT",
+    "Ceara": "CEA",
+    "Corinthians": "COR",
+    "Coritiba": "CFC",
+    "Coritiba Saf": "CFC",
+    "Criciuma": "CRI",
+    "Cruzeiro": "CRU",
+    "Cruzeiro Saf": "CRU",
+    "Cuiaba": "CUI",
+    "Cuiaba Saf": "CUI",
+    "Flamengo": "FLA",
+    "Fluminense": "FLU",
+    "Fortaleza": "FOR",
+    "Fortaleza Ec Saf": "FOR",
+    "Fortaleza Esporte Clube": "FOR",
+    "Fortaleza Saf": "FOR",
+    "Goias": "GOI",
+    "Gremio": "GRE",
+    "Internacional": "INT",
+    "Juventude": "JUV",
+    "Mirassol": "MIR",
+    "Palmeiras": "PAL",
+    "Red Bull Bragantino": "RBB",
+    "Santos": "SAN",
+    "Santos Fc": "SAN",
+    "Sao Paulo": "SAO",
+    "Sport Recife": "SPT",
+    "Vasco": "VAS",
+    "Vasco Da Gama": "VAS",
+    "Vasco Da Gama Saf": "VAS",
+    "Vitoria": "VIT",
 }
 
 
@@ -244,6 +287,10 @@ def _normalize_name(value: str) -> str:
     return normalized.encode("ascii", "ignore").decode("ascii")
 
 
+def _name_key(value: str) -> str:
+    return _normalize_name(str(value)).casefold().strip()
+
+
 def build_abbr_to_clube_id(data_dir: Path, year: int) -> dict[str, int]:
     abbr_to_id: dict[str, int] = {}
 
@@ -283,6 +330,144 @@ def build_abbr_to_clube_id(data_dir: Path, year: int) -> dict[str, int]:
     return abbr_to_id
 
 
+def build_cbf_name_to_clube_id(data_dir: Path, year: int) -> dict[str, int]:
+    abbr_to_id = build_abbr_to_clube_id(data_dir, year)
+    cbf_name_to_id = {}
+
+    for cbf_name, abbr in CBF_NOME_TO_ABBR.items():
+        clube_id = abbr_to_id.get(abbr)
+        if clube_id is not None:
+            cbf_name_to_id[_name_key(cbf_name)] = clube_id
+
+    for abbr, clube_id in abbr_to_id.items():
+        cbf_name_to_id.setdefault(_name_key(abbr), clube_id)
+
+    return cbf_name_to_id
+
+
+def _as_list(value) -> list:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    return [value]
+
+
+def iter_cbf_games(data: dict) -> list[dict]:
+    games = []
+    for entry in _as_list(data.get("jogos", [])):
+        if not isinstance(entry, dict):
+            continue
+        if "mandante" in entry and "visitante" in entry:
+            games.append(entry)
+            continue
+        for game in _as_list(entry.get("jogo", [])):
+            if isinstance(game, dict):
+                games.append(game)
+    return games
+
+
+def _parse_cbf_goals(value) -> object:
+    if value is None or value == "":
+        return pd.NA
+    return int(value)
+
+
+def importar_partidas_cbf(
+    cbf_api: CbfAPI,
+    cbf_name_to_clube_id: dict[str, int],
+    rodadas: list[int],
+    temporada: int,
+) -> pd.DataFrame:
+    rows = []
+    for rodada in tqdm(rodadas, desc=f"CBF partidas {temporada}"):
+        try:
+            data = cbf_api.jogos(rodada)
+        except Exception as exc:
+            log.warning("CBF rodada %s/%s: %s", temporada, rodada, exc)
+            continue
+
+        for match in iter_cbf_games(data):
+            home = match.get("mandante", {}) or {}
+            away = match.get("visitante", {}) or {}
+            home_name = home.get("nome")
+            away_name = away.get("nome")
+            home_id = cbf_name_to_clube_id.get(_name_key(home_name))
+            away_id = cbf_name_to_clube_id.get(_name_key(away_name))
+            if home_id is None or away_id is None:
+                log.warning(
+                    "Sem mapeamento CBF para %s/%s (r%s)",
+                    home_name,
+                    away_name,
+                    rodada,
+                )
+                continue
+
+            home_goals = _parse_cbf_goals(home.get("gols"))
+            away_goals = _parse_cbf_goals(away.get("gols"))
+            rows.extend(
+                [
+                    {
+                        "temporada": temporada,
+                        "rodada": rodada,
+                        "clube_id": home_id,
+                        "mando": 1,
+                        "clube_adversario_id": away_id,
+                        "gols_feitos_clube": home_goals,
+                        "gols_sofridos_clube": away_goals,
+                    },
+                    {
+                        "temporada": temporada,
+                        "rodada": rodada,
+                        "clube_id": away_id,
+                        "mando": -1,
+                        "clube_adversario_id": home_id,
+                        "gols_feitos_clube": away_goals,
+                        "gols_sofridos_clube": home_goals,
+                    },
+                ]
+            )
+
+    partidas = pd.DataFrame(rows)
+    if partidas.empty:
+        return partidas
+
+    for column in ["gols_feitos_clube", "gols_sofridos_clube"]:
+        partidas[column] = pd.to_numeric(partidas[column], errors="coerce").astype("Int64")
+
+    partidas = deduplicate_by_key(partidas, ["temporada", "rodada", "clube_id"])
+    return partidas.sort_values(["temporada", "rodada", "clube_id"]).reset_index(drop=True)
+
+
+def validate_complete_match_rounds(
+    matches: pd.DataFrame,
+    rodadas: list[int],
+    temporada: int,
+) -> None:
+    """Fail fast before saving incomplete historical match datasets."""
+    if matches.empty:
+        raise ValueError(f"Nenhuma partida CBF coletada para {temporada}.")
+
+    expected_rounds = sorted(set(rodadas))
+    round_counts = matches.groupby("rodada").size()
+    incomplete_rounds = {
+        round_number: int(round_counts.get(round_number, 0))
+        for round_number in expected_rounds
+        if int(round_counts.get(round_number, 0)) != 20
+    }
+    if incomplete_rounds:
+        raise ValueError(
+            f"Partidas CBF incompletas para {temporada}: {incomplete_rounds}. "
+            "Esperado: 20 linhas por rodada."
+        )
+
+    null_goal_rows = int(
+        matches[["gols_feitos_clube", "gols_sofridos_clube"]].isna().any(axis=1).sum()
+    )
+    if null_goal_rows:
+        raise ValueError(f"Partidas CBF de {temporada} tem {null_goal_rows} linhas sem placar.")
+
+
 def get_players_data_from_caRtola(year: int, rounds: list[int] | None = None) -> pd.DataFrame:
     target_rounds = rounds or list(range(1, 39))
     log.info("Importando historico de %s do caRtola.", year)
@@ -294,36 +479,48 @@ def import_historic_season(
     rounds: list[int] | None = None,
     token: str | None = None,
     collect_gato_data: bool = True,
+    collect_players_data: bool = True,
+    collect_cbf_data: bool = True,
 ) -> HistoricImportResult:
     target_rounds = rounds or list(range(1, 39))
     result = HistoricImportResult(year=year)
+    
+    if collect_players_data:
+        players = get_players_data_from_caRtola(year, target_rounds)
+        if players.empty:
+            log.error("Nenhum dado coletado para %s.", year)
+            return result
 
-    players = get_players_data_from_caRtola(year, target_rounds)
-    if players.empty:
-        log.error("Nenhum dado coletado para %s.", year)
-        return result
-
-    players_path = DATA_DIR / f"jogadores_por_rodada_{year}.parquet"
-    players.to_parquet(players_path, index=False)
-    result.files["jogadores_por_rodada"] = players_path
-    log.info(
-        "Historico %s salvo: %s rodadas, %s atletas -> %s",
-        year,
-        players["rodada"].nunique(),
-        players["atleta_id"].nunique(),
-        players_path,
-    )
-
-    if not collect_gato_data:
-        return result
-
-    if not token:
-        log.warning("CARTOLA_TOKEN nao definido - partidas e odds de %s nao coletadas.", year)
-        return result
+        players_path = DATA_DIR / f"jogadores_por_rodada_{year}.parquet"
+        players.to_parquet(players_path, index=False)
+        result.files["jogadores_por_rodada"] = players_path
+        log.info(
+            "Historico %s salvo: %s rodadas, %s atletas -> %s",
+            year,
+            players["rodada"].nunique(),
+            players["atleta_id"].nunique(),
+            players_path,
+        )
 
     abbr_to_id = build_abbr_to_clube_id(DATA_DIR, year)
-    gato_api = GatoMestreAPI(token=token, temporada=year)
-    matches, odds = importar_partidas_odds(gato_api, abbr_to_id, target_rounds, year)
+    matches = pd.DataFrame()
+    odds = pd.DataFrame()
+
+    if collect_cbf_data and CbfAPI.supports_season(year):
+        cbf_name_to_id = build_cbf_name_to_clube_id(DATA_DIR, year)
+        cbf_api = CbfAPI(season=year)
+        matches = importar_partidas_cbf(cbf_api, cbf_name_to_id, target_rounds, year)
+        validate_complete_match_rounds(matches, target_rounds, year)
+    elif collect_cbf_data:
+        log.warning("CBF season id nao configurado para %s.", year)
+
+    if collect_gato_data and token:
+        gato_api = GatoMestreAPI(token=token, temporada=year)
+        gato_matches, odds = importar_partidas_odds(gato_api, abbr_to_id, target_rounds, year)
+        if matches.empty:
+            matches = gato_matches
+    elif collect_gato_data:
+        log.warning("CARTOLA_TOKEN nao definido - odds de %s nao coletadas.", year)
 
     if not matches.empty:
         matches_path = DATA_DIR / f"partidas_{year}.parquet"

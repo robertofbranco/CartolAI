@@ -1,10 +1,11 @@
 """Data collection package for CartolaAI."""
 
-from .api import CartolaAPI, GatoMestreAPI
+from .api import CartolaAPI, CbfAPI, GatoMestreAPI
 from .config import (
     BASE_URL,
     BUDGET,
     CAPTAIN_BONUS,
+    CBF_API,
     CURRENT_SEASON,
     DATA_DIR,
     DEFAULT_LIGAS,
@@ -34,6 +35,7 @@ __all__ = [
     "BASE_URL",
     "BUDGET",
     "CAPTAIN_BONUS",
+    "CBF_API",
     "CURRENT_SEASON",
     "DATA_DIR",
     "DEFAULT_LIGAS",
@@ -44,6 +46,7 @@ __all__ = [
     "SCOUT_POINTS",
     "STATUS",
     "CartolaAPI",
+    "CbfAPI",
     "GatoMestreAPI",
     "CurrentSeasonCollectionResult",
     "collect_current_season",

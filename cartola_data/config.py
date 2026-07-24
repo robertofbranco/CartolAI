@@ -2,6 +2,7 @@ from pathlib import Path
 
 BASE_URL = "https://api.cartola.globo.com"
 GATOMESTRE_BASE = "https://api.gatomestre.globo.com"
+CBF_API = "https://www.cbf.com.br/api/cbf/"
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = PROJECT_ROOT / "data"
@@ -18,6 +19,11 @@ FORMATION = {
     4: 3,  # MEI
     5: 3,  # ATA
     6: 1,  # TEC
+}
+
+TEC_ODDS_FILTER = {
+    "min_prob_win": 0.20,
+    "max_prob_loss": 0.40,
 }
 
 POSICAO_NOME = {

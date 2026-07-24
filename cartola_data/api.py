@@ -5,10 +5,17 @@ from pathlib import Path
 
 import requests
 
-from .config import BASE_URL, DATA_DIR, GATOMESTRE_BASE
+from .config import BASE_URL, CBF_API, DATA_DIR, GATOMESTRE_BASE
 from .transforms import safe_filename
 
 log = logging.getLogger(__name__)
+
+CBF_SERIE_A_SEASON_IDS = {
+    2023: 12555,
+    2024: 12584,
+    2025: 12606,
+    2026: 1260611
+}
 
 
 class JsonAPIClient:
@@ -17,14 +24,18 @@ class JsonAPIClient:
         base_url: str,
         token: str | None = None,
         cache_dir: Path = DATA_DIR / "cache",
+        verify_ssl: bool = True,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.cache_dir = cache_dir
+        self.verify_ssl = verify_ssl
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.session = requests.Session()
         self.session.headers.update({"Content-Type": "application/json"})
         if token:
             self.session.headers["Authorization"] = token
+        if not verify_ssl:
+            requests.packages.urllib3.disable_warnings()
 
     def get_json(self, path: str, use_cache: bool = True) -> dict:
         cache_file = self.cache_dir / safe_filename(f"{path}.json")
@@ -34,7 +45,7 @@ class JsonAPIClient:
         url = f"{self.base_url}{path}"
         for attempt in range(3):
             try:
-                response = self.session.get(url, timeout=15)
+                response = self.session.get(url, timeout=15, verify=self.verify_ssl)
                 response.raise_for_status()
                 data = response.json()
                 if use_cache:
@@ -139,3 +150,28 @@ class GatoMestreAPI:
                 time.sleep(2**attempt)
 
         raise RuntimeError(f"Failed to fetch Gato Mestre favorites for round {rodada}")
+    
+
+class CbfAPI(JsonAPIClient):
+    def __init__(
+        self,
+        season: int,
+        cache_dir: Path = DATA_DIR / "cache",
+        verify_ssl: bool = False,
+    ) -> None:
+        self.temporada = season
+        super().__init__(CBF_API, cache_dir=cache_dir, verify_ssl=verify_ssl)
+
+    @classmethod
+    def supports_season(cls, season: int) -> bool:
+        return season in CBF_SERIE_A_SEASON_IDS
+
+    def _season_id(self) -> int:
+        try:
+            return CBF_SERIE_A_SEASON_IDS[self.temporada]
+        except KeyError as exc:
+            raise ValueError(f"CBF season id is not configured for {self.temporada}.") from exc
+
+    def jogos(self, rodada: int) -> dict:
+        path = f"/jogos/campeonato/{self._season_id()}/rodada/{rodada}/fase"
+        return self.get_json(path, use_cache=True)
