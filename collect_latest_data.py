@@ -100,25 +100,21 @@ def find_yearly_parquets(
 def get_previous_round_players_data(api, current_round: int) -> bool:
     target_round = current_round - 1
     players_dataset = PlayersDataset(season=CURRENT_SEASON, data_dir=DATA_DIR)
-    players = players_dataset.read_or_empty()
-
-    round_to_collect = missing_rounds(players, [target_round])
-    if not round_to_collect:
-        return
+    players = players_dataset.read_or_empty()    
     
-    new_players = get_players_data_from_caRtola(CURRENT_SEASON, [round_to_collect])
+    new_players = get_players_data_from_caRtola(CURRENT_SEASON, [target_round])
 
     if new_players.empty:
-        log.info("Coletando rodada %s pela API do cartola.", round_to_collect)
+        log.info("Coletando rodada %s pela API do cartola.", target_round)
         new_players = get_round_players_data_from_cartola(
             api,
-            round_to_collect,
+            target_round,
             temporada=CURRENT_SEASON
         )
 
     if new_players.empty:
         raise RuntimeError(
-            f"Dados de jogadores para rodada {round_to_collect} ainda não estão disponíveis."
+            f"Dados de jogadores para rodada {target_round} ainda não estão disponíveis."
         )
 
     players = pd.concat([players, new_players], ignore_index=True)
@@ -179,17 +175,16 @@ def merge_partitioned_parquets(
 
 def run_collectors(args: argparse.Namespace) -> None:
     token = os.environ.get("CARTOLA_TOKEN")
-
-    if not args.skip_current:
-        api = CartolaAPI(token=token)
-        current_round = get_current_round(api)
-        get_previous_round_players_data(api, current_round)
-        collect_latest_api_data(
-            api=api,
-            current_round=current_round,
-            season=args.current_season,            
-            token=token
-        )        
+    
+    api = CartolaAPI(token=token)
+    current_round = get_current_round(api)
+    collect_latest_api_data(
+        api=api,
+        current_round=current_round,
+        season=args.current_season,
+        token=token
+    )
+    get_previous_round_players_data(api, current_round)
 
 
 def main() -> None:

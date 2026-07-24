@@ -17,16 +17,17 @@ import warnings
 import argparse
 import sys
 import pandas as pd
-import matplotlib
 
 from cartola_data.config import CAPTAIN_BONUS, CURRENT_SEASON, DATA_DIR, RISK_TUNING
 from cartola_data.datasets import read_datasets
 from feature_engineering import build_features
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import matplotlib.gridspec as gridspec
 from pathlib import Path
 from dataclasses import dataclass, field
+from plot_backtest_report import (
+    load_chaves_ligas as _load_chaves_ligas,
+    load_medias_cartoleiros as _load_medias_cartoleiros,
+    plot_backtest_report,
+)
 
 from cartola_team_builder import (
     assign_captain,
@@ -124,29 +125,13 @@ def build_clubes_lookup(df_players_per_round: pd.DataFrame) -> dict:
 
 
 def load_medias_cartoleiros() -> pd.DataFrame:
-    """Load Cartola users' average score by round, when available."""
-    medias_file = DATA_DIR / "medias_cartoleiros.parquet"
-    columns = ["rodada", "media_cartoleiros"]
-    if not medias_file.exists():
-        log.warning(f"Arquivo nao encontrado: {medias_file}")
-        return pd.DataFrame(columns=columns)
+    """Backward-compatible wrapper for report plot overlay data."""
+    return _load_medias_cartoleiros(DATA_DIR)
 
-    try:
-        medias_df = pd.read_parquet(medias_file)
-    except Exception as exc:
-        log.warning(f"Falha ao carregar {medias_file}: {exc}")
-        return pd.DataFrame(columns=columns)
 
-    if not set(columns).issubset(medias_df.columns):
-        log.warning(f"{medias_file} nao contem as colunas esperadas: {columns}")
-        return pd.DataFrame(columns=columns)
-
-    return (
-        medias_df[columns]
-        .dropna(subset=["rodada", "media_cartoleiros"])
-        .drop_duplicates("rodada")
-        .sort_values("rodada")
-    )
+def load_chaves_ligas() -> pd.DataFrame:
+    """Backward-compatible wrapper for report plot overlay data."""
+    return _load_chaves_ligas(DATA_DIR)
 
 
 def mae_por_posicao_from_models(models_by_position: dict) -> dict[str, float]:
@@ -697,141 +682,12 @@ def gerar_relatorio(resultados: list[ResultadoRodada], output_dir: str | Path = 
     print("="*70)
 
     # ── Gráficos ──
-    fig = plt.figure(figsize=(16, 12))
-    fig.suptitle("Cartola FC — Backtesting Report", fontsize=14, fontweight="bold")
-    gs = gridspec.GridSpec(
-        3,
-        3,
-        figure=fig,
-        height_ratios=[1.4, 1.4, 1.0],
-        hspace=0.5,
-        wspace=0.35,
+    plot_backtest_report(
+        df,
+        mae_posicao_df,
+        output_dir / "backtest_report.png",
+        data_dir=DATA_DIR,
     )
-
-    rodadas = df["rodada"].values
-    medias_cartoleiros = load_medias_cartoleiros()
-    medias_cartoleiros_plot = df[["rodada"]].merge(
-        medias_cartoleiros,
-        on="rodada",
-        how="left",
-    ).dropna(subset=["media_cartoleiros"])
-
-    # 1. Pontuação por rodada
-    ax1 = fig.add_subplot(gs[:2, :2])
-    ax1.plot(
-        rodadas,
-        df["pts_teto"],
-        "--o",
-        color="gold",
-        label="Teto (oracle)",
-        alpha=0.75,
-        linewidth=2,
-        markersize=5,
-    )
-    ax1.plot(
-        rodadas,
-        df["pts_modelo"],
-        "-o",
-        color="#2196F3",
-        label="Modelo ML",
-        linewidth=2,
-        markersize=5,
-    )
-    if not medias_cartoleiros_plot.empty:
-        ax1.plot(
-            medias_cartoleiros_plot["rodada"],
-            medias_cartoleiros_plot["media_cartoleiros"],
-            "-o",
-            color="#2E7D32",
-            label="Média Cartoleiros",
-            linewidth=2,
-            markersize=5,
-            alpha=0.9,
-        )
-    for rodada, pts_teto, pts_modelo in zip(rodadas, df["pts_teto"], df["pts_modelo"]):
-        ax1.annotate(
-            f"{pts_teto:.1f}",
-            (rodada, pts_teto),
-            textcoords="offset points",
-            xytext=(0, 8),
-            ha="center",
-            fontsize=8,
-            color="#8A6D00",
-        )
-        ax1.annotate(
-            f"{pts_modelo:.1f}",
-            (rodada, pts_modelo),
-            textcoords="offset points",
-            xytext=(0, -14),
-            ha="center",
-            fontsize=8,
-            color="#0D47A1",
-        )
-    ax1.set_title("Pontuação Real por Rodada")
-    for _, row in medias_cartoleiros_plot.iterrows():
-        ax1.annotate(
-            f"{row['media_cartoleiros']:.1f}",
-            (row["rodada"], row["media_cartoleiros"]),
-            textcoords="offset points",
-            xytext=(0, 8),
-            ha="center",
-            fontsize=8,
-            color="#1B5E20",
-        )
-    ax1.set_xlabel("Rodada")
-    ax1.set_ylabel("Pontos")
-    ax1.legend(fontsize=8)
-    ax1.grid(True, alpha=0.3)
-
-    # 2. Eficiência (%)
-    ax2 = fig.add_subplot(gs[0, 2])
-    colors = ["#2196F3" if e >= 0.7 else "#FF7043" for e in df["eficiencia"]]
-    ax2.bar(rodadas, df["eficiencia"] * 100, color=colors, alpha=0.8)
-    ax2.axhline(df["eficiencia"].mean() * 100, color="black", linestyle="--",
-                linewidth=1, label=f"Média {df['eficiencia'].mean():.0%}")
-    ax2.set_title("Eficiência vs. Teto")
-    ax2.set_xlabel("Rodada")
-    ax2.set_ylabel("% do teto alcançado")
-    ax2.legend(fontsize=8)
-    ax2.grid(True, alpha=0.3, axis="y")
-
-    # 4. MAE por rodada
-    ax4 = fig.add_subplot(gs[1, 2])
-    ax4.plot(rodadas, df["mae_predicao"], "-o", color="#9C27B0", linewidth=2)
-    ax4.axhline(df["mae_predicao"].mean(), color="black", linestyle="--",
-                linewidth=1, label=f"Média {df['mae_predicao'].mean():.2f}")
-    ax4.set_title("MAE de Predição por Rodada")
-    ax4.set_xlabel("Rodada")
-    ax4.set_ylabel("MAE (pontos)")
-    ax4.legend(fontsize=8)
-    ax4.grid(True, alpha=0.3)
-
-    # 5. MAE por posicao
-    ax5 = fig.add_subplot(gs[2, :])
-    if not mae_posicao_df.empty:
-        posicao_order = list(POSICAO_NOME.values())
-        for posicao in posicao_order:
-            position_mae = mae_posicao_df[mae_posicao_df["posicao"] == posicao]
-            if position_mae.empty:
-                continue
-            ax5.plot(
-                position_mae["rodada"],
-                position_mae["mae_predicao"],
-                "-o",
-                label=posicao,
-                linewidth=1.8,
-                markersize=4,
-            )
-        ax5.set_title("MAE por Posição")
-        ax5.set_xlabel("Rodada")
-        ax5.set_ylabel("MAE (pontos)")
-        ax5.legend(fontsize=8, ncol=min(6, max(1, mae_posicao_df["posicao"].nunique())))
-        ax5.grid(True, alpha=0.3)
-    else:
-        ax5.set_axis_off()
-
-    plt.savefig(output_dir / "backtest_report.png", dpi=150, bbox_inches="tight")
-    log.info(f"Gráfico salvo em {output_dir / 'backtest_report.png'}")
 
     # ── Salvar CSV ──
     df.to_csv(output_dir / "backtest_resultados.csv", index=False)
@@ -890,7 +746,7 @@ def main():
     parser = argparse.ArgumentParser(description="Cartola FC — Backtesting Engine")
     parser.add_argument("--temporada",  type=int, default=CURRENT_SEASON,    help="Primeira rodada a testar (mín. 6)")
     parser.add_argument("--inicio",     type=int, default=10,    help="Primeira rodada a testar (mín. 6)")
-    parser.add_argument("--fim",        type=int, default=16,   help="Última rodada a testar")
+    parser.add_argument("--fim",        type=int, default=17,   help="Última rodada a testar")
     parser.add_argument(
         "--output-folder",
         type=Path,
