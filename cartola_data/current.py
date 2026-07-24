@@ -41,7 +41,7 @@ def _iter_atletas(atletas: dict | list) -> list[tuple[int | None, dict]]:
     return [(atleta.get("atleta_id"), atleta) for atleta in atletas]
 
 
-def get_players_data(
+def get_players_data_from_cartola_api(
     api: CartolaAPI,
     rodadas_alvo: list[int],
     temporada: int = CURRENT_SEASON,
@@ -335,50 +335,22 @@ def _save_yearly_dataset(
 
 
 def collect_current_season(
+    api: CartolaAPI,
+    current_round: int,
     temporada: int = CURRENT_SEASON,
-    rodadas: list[int] | None = None,
     token: str | None = None,
     ligas: list[str] | None = None,
 ) -> CurrentSeasonCollectionResult:
     """Collect live Cartola/Gato Mestre data and persist project datasets."""
-    api = CartolaAPI(token=token)
-    current_round = get_current_round(api)
-    target_rounds = rodadas or list(range(1, current_round))
+    target_rounds = list(range(1, current_round))
     result = CurrentSeasonCollectionResult(season=temporada, rounds=target_rounds)
 
     if not target_rounds:
         log.error("Nenhuma rodada para coletar.")
         return result
 
-    players_file = DATA_DIR / f"jogadores_por_rodada_{temporada}.parquet"
-    if players_file.exists():
-        players = pd.read_parquet(players_file)
-        rounds_to_collect = missing_rounds(players, target_rounds)
-        if rounds_to_collect:
-            log.info("Coletando %s rodadas novas.", len(rounds_to_collect))
-            new_players = get_players_data(api, rounds_to_collect, temporada=temporada)
-            players = pd.concat([players, new_players], ignore_index=True)
-        else:
-            log.info("Jogadores por rodada ja estao atualizados.")
-    else:
-        players = get_players_data(api, target_rounds, temporada=temporada)
-
-    if not players.empty:
-        players = deduplicate_by_key(
-            players,
-            ["temporada", "rodada", "atleta_id"],
-            prefer_played=True,
-        )
-                
-        _save_yearly_dataset(players, players_file, result, "jogadores_por_rodada")
-        log.info(
-            "Jogadores por rodada salvos: %s rodadas, %s atletas -> %s",
-            players["rodada"].nunique(),
-            players["atleta_id"].nunique(),
-            players_file,
-        )
-
-    matches = preparar_partidas(api, target_rounds, temporada=temporada)
+    matches_rounds = sorted(set(target_rounds + [current_round]))
+    matches = preparar_partidas(api, matches_rounds, temporada=temporada)
     _save_yearly_dataset(matches, DATA_DIR / f"partidas_{temporada}.parquet", result, "partidas")
 
     market = get_current_market(api)
@@ -389,9 +361,8 @@ def collect_current_season(
         log.info("Mercado atual salvo: %s atletas -> %s", len(market), market_file)
 
     if token:
-        gato_api = GatoMestreAPI(token=token, temporada=temporada)
-        odds_rounds = sorted(set(target_rounds + [current_round]))
-        odds = get_odds(gato_api, api.clubes(), odds_rounds, temporada=temporada)
+        gato_api = GatoMestreAPI(token=token, temporada=temporada)        
+        odds = get_odds(gato_api, api.clubes(), matches_rounds, temporada=temporada)
         _save_yearly_dataset(odds, DATA_DIR / f"odds_{temporada}.parquet", result, "odds")
     else:
         log.info("CARTOLA_TOKEN nao definido - odds nao coletadas.")

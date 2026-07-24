@@ -19,7 +19,7 @@ import sys
 import pandas as pd
 import matplotlib
 
-from cartola_data.config import DATA_DIR
+from cartola_data.config import CAPTAIN_BONUS, CURRENT_SEASON, DATA_DIR, RISK_TUNING
 from cartola_data.datasets import read_datasets
 from feature_engineering import build_features
 matplotlib.use("Agg")
@@ -29,16 +29,43 @@ from pathlib import Path
 from dataclasses import dataclass, field
 
 from cartola_team_builder import (
+    assign_captain,
     apply_reserve_substitutions,
     build_team,
+    lineup_output_table,
     merge_target_round_odds,
-    ODDS_COLS,
-    POSICAO_NOME,
-    FORMATION,
     feature_cols_from_models,
     mean_mae_from_models,
+    score_with_captain_bonus,
     train_models_by_position,
+    ODDS_COLS,
+    CAPTAIN_COL
 )
+
+from cartola_data.config import (
+    CAPTAIN_BONUS,    
+    DATA_DIR,
+    FORMATION,
+    POSICAO_NOME,    
+    TUNING
+)
+
+CSV_PLAYERS_COLUMNS = [
+    "rodada",
+    "atleta_id",
+    "apelido",
+    "posicao",
+    "clube",
+    "clube adversario",
+    "mando",
+    "pontos_com_bonus",
+    "pontos",
+    "pontos_previstos",    
+    "capitao",
+    "reserva",
+    "reserva_de_luxo",
+    "substituiu_apelido"
+]
 
 
 def configure_console_output() -> None:
@@ -156,12 +183,9 @@ def calcular_teto(df_rodada_real: pd.DataFrame, formation: dict) -> float:
 
     team_df = pd.DataFrame(selected_players)
     team_df = team_df.sort_values(["posicao_id", "pontos"], ascending=[True, False])
+    team_df = assign_captain(team_df, score_column="pontos")
 
-    reais = team_df.set_index("atleta_id")["pontos"].to_dict()
-    pts_reais_lista = [reais.get(aid, 0) for aid in team_df["atleta_id"]]
-    pts_teto = sum(p for p in pts_reais_lista)
-
-    return pts_teto
+    return score_with_captain_bonus(team_df, points_column="pontos")
 
 
 def latest_features_before_round(
@@ -431,7 +455,9 @@ def rodar_backtest(
     rodada_inicio: int,
     rodada_fim: int,
     formation: dict = FORMATION,
-    season: int = 2026
+    season: int = 2026,
+    tuning: dict = TUNING,
+    output_folder: str | Path | None = RESULTS_DIR,
 ) -> list[ResultadoRodada]:
     """
     Para cada rodada no intervalo [rodada_inicio, rodada_fim]:
@@ -439,6 +465,10 @@ def rodar_backtest(
       2. Usa o mercado daquela rodada para montar o time
       3. Compara com os pontos REAIS da rodada (que o modelo nunca viu)
     """
+    output_dir = Path(output_folder) if output_folder is not None else None
+    if output_dir is not None:
+        output_dir.mkdir(parents=True, exist_ok=True)
+
     df_players_per_round, df_matches, df_odds = read_datasets()
 
     resultados = []
@@ -495,6 +525,7 @@ def rodar_backtest(
                 df_feat,
                 round_limit=rodada_alvo,
                 season=season,
+                tuning=tuning
             )
         except ValueError as e:
             log.warning(f"Rodada {rodada_alvo}: {e}")
@@ -544,8 +575,15 @@ def rodar_backtest(
 
         # Pontuação REAL dos jogadores escolhidos pelo modelo
         reais = df_rodada_real.set_index("atleta_id")["pontos"].to_dict()
-        pts_reais_lista = [reais.get(aid, 0) for aid in time_modelo["atleta_id"]]
-        pts_modelo = sum(p for p in pts_reais_lista)
+        time_modelo["pontos_real"] = time_modelo["atleta_id"].map(reais).fillna(0.0)
+        time_modelo["multiplicador_capitao"] = 1.0
+        if CAPTAIN_COL in time_modelo.columns:
+            captain_mask = time_modelo[CAPTAIN_COL].fillna(False).astype(bool)
+            time_modelo.loc[captain_mask, "multiplicador_capitao"] = CAPTAIN_BONUS
+        time_modelo["pontos_com_bonus"] = (
+            time_modelo["pontos_real"] * time_modelo["multiplicador_capitao"]
+        )
+        pts_modelo = score_with_captain_bonus(time_modelo, points_column="pontos_real")
 
         # Anotar posição (string), adversário e pontos reais no lineup para o log/CSV
         time_modelo["posicao"] = time_modelo["posicao_id"].map(POSICAO_NOME)
@@ -565,18 +603,19 @@ def rodar_backtest(
             .map(clubes_lookup)
             .fillna("?")
         )
-        time_modelo["pontos_real"] = time_modelo["atleta_id"].map(reais).fillna(0.0)
-
         log.info(f"Time escalado R{rodada_alvo}:")
         for _, p in time_modelo.iterrows():
             apelido = (p["apelido"] or "")[:20]
             clube = (p.get("clube") or "")[:16]
             adv = (p["adversario"] or "")[:16]
             reserva = " RES" if bool(p.get("reserva", False)) else ""
+            luxo = " LUX" if bool(p.get("reserva_de_luxo", False)) else ""
+            capitao = " CAP" if bool(p.get(CAPTAIN_COL, False)) else ""
             log.info(
-                f"  {p['posicao']:<3} {apelido:<20} {clube:<16} vs {adv:<16}{reserva:<4} "
+                f"  {p['posicao']:<3} {apelido:<20} {clube:<16} vs {adv:<16}"
+                f"{reserva:<4}{luxo:<4}{capitao:<4} "
                 f"avg={p['media']:>5.2f} preco={p['preco']:>5.1f} "
-                f"pts={p['pontos_real']:>5.1f}"
+                f"pts={p['pontos_real']:>5.1f} final={p['pontos_com_bonus']:>5.1f}"
             )
 
         # Teto (oracle)
@@ -600,6 +639,12 @@ def rodar_backtest(
             f"Teto: {pts_teto:.1f} | Eficiência: {eficiencia:.1%} | MAE: {mae:.2f}"
         )
 
+    if output_dir is not None:
+        if resultados:
+            gerar_relatorio(resultados, output_dir=output_dir)
+        else:
+            log.warning(f"Nenhum resultado gerado; relatorio nao foi salvo em {output_dir}.")
+
     return resultados
 
 
@@ -607,8 +652,11 @@ def rodar_backtest(
 # RELATÓRIO
 # ──────────────────────────────────────────────
 
-def gerar_relatorio(resultados: list[ResultadoRodada], output_dir: Path = RESULTS_DIR):
+def gerar_relatorio(resultados: list[ResultadoRodada], output_dir: str | Path = RESULTS_DIR):
     """Gera DataFrame resumo + gráficos do backtesting."""
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     df = pd.DataFrame([{
         "rodada":            r.rodada,
@@ -796,31 +844,24 @@ def gerar_relatorio(resultados: list[ResultadoRodada], output_dir: Path = RESULT
             continue
 
         time_escalado["rodada"] = resultado.rodada
-        if "clube" not in time_escalado.columns:
-            time_escalado["clube"] = time_escalado.get("clube_nome", "")
-        time_escalado["clube adversario"] = time_escalado.get("adversario", "")
-        time_escalado["pontos"] = time_escalado.get("pontos_real", 0.0)
+        lineup_table = lineup_output_table(time_escalado)
+        if "pontos_real" in time_escalado.columns:
+            lineup_table["pontos"] = time_escalado["pontos_real"].to_numpy()
+        elif "pontos" in time_escalado.columns:
+            lineup_table["pontos"] = time_escalado["pontos"].to_numpy()
+        if "pontos_com_bonus" in time_escalado.columns:
+            lineup_table["pontos_com_bonus"] = time_escalado["pontos_com_bonus"].to_numpy()
+        for column in ["substituiu_atleta_id", "substituiu_apelido"]:
+            if column in time_escalado.columns:
+                lineup_table[column] = time_escalado[column].to_numpy()
+        lineup_table["_posicao_id"] = time_escalado["posicao_id"].to_numpy()
+        selected_players_rows.append(lineup_table)
 
-        selected_players_rows.append(time_escalado)
-
-    selected_players_columns = [
-        "rodada",
-        "atleta_id",
-        "apelido",
-        "posicao",
-        "clube",
-        "clube adversario",
-        "mando",
-        "pontos",
-        "pontos_previstos",
-        "reserva",
-        "substituiu_atleta_id",
-        "substituiu_apelido",
-    ]
+    selected_players_columns = CSV_PLAYERS_COLUMNS
     if selected_players_rows:
         selected_players_df = pd.concat(selected_players_rows, ignore_index=True)
         selected_players_df = selected_players_df.sort_values(
-            ["rodada", "posicao_id"],
+            ["rodada", "_posicao_id"],
             ascending=[True, True],
         )
         for column in selected_players_columns:
@@ -829,11 +870,6 @@ def gerar_relatorio(resultados: list[ResultadoRodada], output_dir: Path = RESULT
         selected_players_df = selected_players_df[selected_players_columns]
     else:
         selected_players_df = pd.DataFrame(columns=selected_players_columns)
-
-    selected_players_df["mando"] = selected_players_df["mando"].map({
-        1: "CASA",
-        -1: "FORA",
-    })
 
     selected_players_path = output_dir / "backtest_time_escalado.csv"
     selected_players_df.to_csv(selected_players_path, index=False)
@@ -848,23 +884,29 @@ def gerar_relatorio(resultados: list[ResultadoRodada], output_dir: Path = RESULT
 
 def main():
     parser = argparse.ArgumentParser(description="Cartola FC — Backtesting Engine")
-    parser.add_argument("--inicio",  type=int, default=10,    help="Primeira rodada a testar (mín. 6)")
-    parser.add_argument("--fim",     type=int, default=15,   help="Última rodada a testar")
+    parser.add_argument("--temporada",  type=int, default=CURRENT_SEASON,    help="Primeira rodada a testar (mín. 6)")
+    parser.add_argument("--inicio",     type=int, default=10,    help="Primeira rodada a testar (mín. 6)")
+    parser.add_argument("--fim",        type=int, default=16,   help="Última rodada a testar")
+    parser.add_argument(
+        "--output-folder",
+        type=Path,
+        default=RESULTS_DIR,
+        help="Pasta onde salvar os arquivos gerados pelo backtest",
+    )
     #parser.add_argument("--budget",  type=float, default=140.0)
     args = parser.parse_args()    
 
     # Rodar backtest
     resultados = rodar_backtest(
+        season=args.temporada,
         rodada_inicio=args.inicio,
-        rodada_fim=args.fim
+        rodada_fim=args.fim,
+        output_folder=args.output_folder,
     )
 
     if not resultados:
         log.error("Nenhum resultado gerado. Verifique os dados históricos.")
         return
-
-    # Relatório
-    gerar_relatorio(resultados)
 
 
 if __name__ == "__main__":

@@ -46,6 +46,66 @@ class MergePartitionedParquetsTest(unittest.TestCase):
 
 
 class CollectAllDataFlowTest(unittest.TestCase):
+    def test_get_players_data_fetches_only_archive_missing_rounds_from_api(self):
+        archive_players = pd.DataFrame(
+            [
+                {"temporada": 2026, "rodada": 1, "atleta_id": 101, "clube_id": 263},
+                {"temporada": 2026, "rodada": 2, "atleta_id": 102, "clube_id": 263},
+            ]
+        )
+        api_players = pd.DataFrame(
+            [
+                {"temporada": 2026, "rodada": 3, "atleta_id": 103, "clube_id": 263},
+                {"temporada": 2026, "rodada": 4, "atleta_id": 104, "clube_id": 263},
+            ]
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            api = MagicMock()
+            with (
+                patch.object(collect_all_data, "DATA_DIR", data_dir),
+                patch.object(
+                    collect_all_data,
+                    "get_players_data_from_caRtola",
+                    return_value=archive_players,
+                ) as get_archive_players,
+                patch.object(
+                    collect_all_data,
+                    "get_players_data_from_cartola_api",
+                    return_value=api_players,
+                ) as get_api_players,
+            ):
+                collect_all_data.get_players_data(api, current_round=5, season=2026)
+
+            get_archive_players.assert_called_once_with(2026, [1, 2, 3, 4])
+            get_api_players.assert_called_once_with(api, [3, 4], temporada=2026)
+
+            saved_players = pd.read_parquet(data_dir / "jogadores_por_rodada_2026.parquet")
+            self.assertEqual(saved_players["rodada"].tolist(), [1, 2, 3, 4])
+
+    def test_get_players_data_raises_when_no_player_data_is_collected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            api = MagicMock()
+            with (
+                patch.object(collect_all_data, "DATA_DIR", data_dir),
+                patch.object(
+                    collect_all_data,
+                    "get_players_data_from_caRtola",
+                    return_value=pd.DataFrame(),
+                ),
+                patch.object(
+                    collect_all_data,
+                    "get_players_data_from_cartola_api",
+                    return_value=pd.DataFrame(),
+                ),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "Nenhum dado de jogadores coletado"):
+                    collect_all_data.get_players_data(api, current_round=5, season=2026)
+
+            self.assertFalse((data_dir / "jogadores_por_rodada_2026.parquet").exists())
+
     def test_run_collectors_wires_historic_current_and_current_players(self):
         args = Namespace(
             current_season=2026,
