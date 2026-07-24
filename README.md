@@ -24,8 +24,13 @@ API Cartola  →  Coleta histórica  →  Engenharia de Features  →  LightGBM 
 ## Instalação
 
 ```bash
-pip install -r requirements.txt
+python -m pip install -e .
 ```
+
+Isso instala o projeto em modo editavel. Depois disso, imports como
+`from cartola_data import read_datasets` funcionam em notebooks e scripts
+executados a partir de subpastas, desde que o kernel/terminal use o mesmo
+ambiente Python.
 
 ---
 

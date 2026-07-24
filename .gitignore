@@ -1,5 +1,7 @@
 __pycache__/
 *.pyc
+*.egg-info/
+.ipynb_checkpoints/
 data/cache/
 data/historico.parquet
 data/time_rodada_*.csv

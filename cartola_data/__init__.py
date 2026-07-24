@@ -11,7 +11,9 @@ from .config import (
     FORMATION,
     GATOMESTRE_BASE,
     POSICAO_NOME,
+    PROJECT_ROOT,
     SCOUT_POINTS,
+    STATUS,
 )
 from .current import (
     CurrentSeasonCollectionResult,
@@ -26,7 +28,7 @@ from .current import (
     preparar_partidas,
 )
 from .datasets import read_datasets
-from .transforms import  safe_filename
+from .transforms import deduplicate_by_key, safe_filename
 
 __all__ = [
     "BASE_URL",
@@ -38,12 +40,14 @@ __all__ = [
     "FORMATION",
     "GATOMESTRE_BASE",
     "POSICAO_NOME",
+    "PROJECT_ROOT",
     "SCOUT_POINTS",
+    "STATUS",
     "CartolaAPI",
     "GatoMestreAPI",
     "CurrentSeasonCollectionResult",
-    "calculate_player_running_average",
     "collect_current_season",
+    "deduplicate_by_key",
     "get_cartola_users_mean",
     "get_current_market",
     "get_current_round",
