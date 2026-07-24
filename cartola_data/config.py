@@ -23,8 +23,8 @@ FORMATION = {
 }
 
 ODDS_FILTER = {
-    "min_prob_win": 0.20,
-    "max_prob_loss": 0.40,
+    "min_prob_win": 0.15,
+    "max_prob_loss": 0.35,
 }
 
 POSICAO_NOME = {
@@ -72,6 +72,78 @@ DEFAULT_LIGAS = [
     "2o-mata-mata-brothers-do-graia",
 ]
 
+NOME_TO_ABBR = {
+    "Flamengo": "FLA",
+    "Botafogo": "BOT",
+    "Corinthians": "COR",
+    "Bahia": "BAH",
+    "Fluminense": "FLU",
+    "Vasco": "VAS",
+    "Palmeiras": "PAL",
+    "Sao Paulo": "SAO",
+    "Santos": "SAN",
+    "Bragantino": "RBB",
+    "Atletico-MG": "CAM",
+    "Cruzeiro": "CRU",
+    "Gremio": "GRE",
+    "Internacional": "INT",
+    "Juventude": "JUV",
+    "Vitoria": "VIT",
+    "Criciuma": "CRI",
+    "Goias": "GOI",
+    "Athletico-PR": "CAP",
+    "Coritiba": "CFC",
+    "America-MG": "AME",
+    "Fortaleza": "FOR",
+    "Atletico-GO": "ACG",
+    "Cuiaba": "CUI",
+    "Avai": "AVA",
+    "Ceara": "CEA",
+}
+
+CBF_NOME_TO_ABBR = {
+    "America Fc Saf": "AME",
+    "America Mineiro": "AME",
+    "America Saf": "AME",
+    "America": "AME",
+    "Atletico Goianiense": "ACG",
+    "Atletico Goianiense Saf": "ACG",
+    "Atletico Mineiro": "CAM",
+    "Athletico Paranaense": "CAP",
+    "Bahia": "BAH",
+    "Botafogo": "BOT",
+    "Ceara": "CEA",
+    "Corinthians": "COR",
+    "Coritiba": "CFC",
+    "Coritiba Saf": "CFC",
+    "Criciuma": "CRI",
+    "Cruzeiro": "CRU",
+    "Cruzeiro Saf": "CRU",
+    "Cuiaba": "CUI",
+    "Cuiaba Saf": "CUI",
+    "Flamengo": "FLA",
+    "Fluminense": "FLU",
+    "Fortaleza": "FOR",
+    "Fortaleza Ec Saf": "FOR",
+    "Fortaleza Esporte Clube": "FOR",
+    "Fortaleza Saf": "FOR",
+    "Goias": "GOI",
+    "Gremio": "GRE",
+    "Internacional": "INT",
+    "Juventude": "JUV",
+    "Mirassol": "MIR",
+    "Palmeiras": "PAL",
+    "Red Bull Bragantino": "RBB",
+    "Santos": "SAN",
+    "Santos Fc": "SAN",
+    "Sao Paulo": "SAO",
+    "Sport Recife": "SPT",
+    "Vasco": "VAS",
+    "Vasco Da Gama": "VAS",
+    "Vasco Da Gama Saf": "VAS",
+    "Vitoria": "VIT",
+}
+
 TUNING = {
     "n_estimators": 300,
     "max_depth": 8,
@@ -90,4 +162,22 @@ RISK_TUNING = {
     "min_samples_split": 2,
     "max_features": "sqrt",
     "n_jobs": -1,
+}
+
+GRADIENT_BOOSTING_TUNING = {
+    "n_estimators": 1200,
+    "learning_rate": 0.01,
+    "max_depth": 2,
+    "num_leaves": 15,
+    "min_child_samples": 15,
+    "random_state": 42,
+    "subsample": 0.8,
+    "colsample_bytree": 0.8,
+    "reg_alpha": 0.1,
+    "reg_lambda": 1.0,
+    "objective": "regression",
+    "metric": "mae",
+    "early_stopping_rounds": 50,
+    "n_jobs": -1,
+    "verbosity": -1,
 }

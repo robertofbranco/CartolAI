@@ -18,17 +18,27 @@ from .config import (
 )
 from .current import (
     CurrentSeasonCollectionResult,
-    collect_current_season,
+    collect_latest_api_data,
     get_cartola_users_mean,
     get_current_market,
     get_current_round,
     get_league_brackets,
     get_odds,
-    get_players_data_from_cartola_api,
+    get_round_players_data_from_cartola,
     missing_rounds,
     preparar_partidas,
 )
 from .datasets import read_datasets
+from .file_manager import (
+    CartolaUsersMeanDataset,
+    CurrentMarketDataset,
+    DatasetFile,
+    FileManager,
+    LeagueBracketsDataset,
+    MatchesDataset,
+    OddsDataset,
+    PlayersDataset,
+)
 from .transforms import deduplicate_by_key, safe_filename
 
 __all__ = [
@@ -46,17 +56,25 @@ __all__ = [
     "SCOUT_POINTS",
     "STATUS",
     "CartolaAPI",
+    "CartolaUsersMeanDataset",
     "CbfAPI",
+    "CurrentMarketDataset",
+    "DatasetFile",
     "GatoMestreAPI",
+    "FileManager",
+    "LeagueBracketsDataset",
+    "MatchesDataset",
+    "OddsDataset",
+    "PlayersDataset",
     "CurrentSeasonCollectionResult",
-    "collect_current_season",
+    "collect_latest_api_data",
     "deduplicate_by_key",
     "get_cartola_users_mean",
     "get_current_market",
     "get_current_round",
     "get_league_brackets",
     "get_odds",
-    "get_players_data_from_cartola_api",
+    "get_round_players_data_from_cartola",
     "missing_rounds",
     "preparar_partidas",
     "read_datasets",

@@ -1,8 +1,11 @@
 import logging
 import os
+import argparse
 import pandas as pd
 from dotenv import load_dotenv
+import lightgbm as lgb
 
+from lightgbm import LGBMRegressor
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_absolute_error
 
@@ -15,6 +18,7 @@ from cartola_data.config import (
     CURRENT_SEASON,
     DATA_DIR,
     FORMATION,
+    GRADIENT_BOOSTING_TUNING,
     POSICAO_NOME,
     RISK_TUNING,
     STATUS,
@@ -49,10 +53,148 @@ LINEUP_OUTPUT_COLUMNS = [
     "capitao",
 ]
 
+DEFAULT_MODEL_STRATEGY = "random_forest"
+GRADIENT_BOOSTING_STRATEGY = "gradient_boosting"
 
-def train_model(df: pd.DataFrame, round_limit: int, season: int | None = None, tuning = TUNING):
+
+class ModelTrainingStrategy:
+    """Builds a regression model for Cartola point prediction."""
+
+    name: str
+    default_tuning: dict
+
+    def merged_tuning(self, tuning: dict | None = None) -> dict:
+        return {**self.default_tuning, **(tuning or {})}
+
+    def build_model(self, tuning: dict | None = None):
+        raise NotImplementedError
+
+    def fit_model(
+        self,
+        model,
+        X_train: pd.DataFrame,
+        y_train: pd.Series,
+        X_val: pd.DataFrame,
+        y_val: pd.Series,
+        tuning: dict | None = None,
+    ):
+        model.fit(X_train, y_train)
+        return model
+
+
+class RandomForestTrainingStrategy(ModelTrainingStrategy):
+    name = DEFAULT_MODEL_STRATEGY
+    default_tuning = TUNING
+
+    def build_model(self, tuning: dict | None = None) -> RandomForestRegressor:
+        params = self.merged_tuning(tuning)
+        return RandomForestRegressor(
+            n_estimators=params["n_estimators"],
+            max_depth=params["max_depth"],
+            min_samples_leaf=params["min_samples_leaf"],
+            random_state=params["random_state"],
+            min_samples_split=params["min_samples_split"],
+            max_features=params["max_features"],
+            n_jobs=params["n_jobs"],
+        )
+
+
+class GradientBoostingTrainingStrategy(ModelTrainingStrategy):
+    name = GRADIENT_BOOSTING_STRATEGY
+    default_tuning = GRADIENT_BOOSTING_TUNING
+
+    def build_model(self, tuning: dict | None = None) -> LGBMRegressor:
+        params = self.merged_tuning(tuning)
+        return LGBMRegressor(
+            n_estimators=params["n_estimators"],
+            learning_rate=params["learning_rate"],
+            max_depth=params["max_depth"],
+            num_leaves=params["num_leaves"],
+            min_child_samples=params["min_child_samples"],
+            random_state=params["random_state"],
+            subsample=params["subsample"],
+            colsample_bytree=params["colsample_bytree"],
+            reg_alpha=params["reg_alpha"],
+            reg_lambda=params["reg_lambda"],
+            objective=params["objective"],
+            metric=params["metric"],
+            n_jobs=params["n_jobs"],
+            verbosity=params["verbosity"],
+        )
+
+    def fit_model(
+        self,
+        model: LGBMRegressor,
+        X_train: pd.DataFrame,
+        y_train: pd.Series,
+        X_val: pd.DataFrame,
+        y_val: pd.Series,
+        tuning: dict | None = None,
+    ) -> LGBMRegressor:
+        params = self.merged_tuning(tuning)
+        callbacks = [
+            lgb.early_stopping(
+                stopping_rounds=params["early_stopping_rounds"],
+                verbose=False,
+            ),
+            lgb.log_evaluation(period=0),
+        ]
+        model.fit(
+            X_train,
+            y_train,
+            eval_set=[(X_val, y_val)],
+            eval_metric=params["metric"],
+            callbacks=callbacks,
+        )
+        return model
+
+
+MODEL_TRAINING_STRATEGIES = {
+    DEFAULT_MODEL_STRATEGY: RandomForestTrainingStrategy(),
+    GRADIENT_BOOSTING_STRATEGY: GradientBoostingTrainingStrategy(),
+}
+
+MODEL_STRATEGY_ALIASES = {
+    "rf": DEFAULT_MODEL_STRATEGY,
+    "random-forest": DEFAULT_MODEL_STRATEGY,
+    "random_forest": DEFAULT_MODEL_STRATEGY,
+    "gb": GRADIENT_BOOSTING_STRATEGY,
+    "gradient-boosting": GRADIENT_BOOSTING_STRATEGY,
+    "gradient_boosting": GRADIENT_BOOSTING_STRATEGY,
+}
+
+
+def available_model_strategies() -> list[str]:
+    return list(MODEL_TRAINING_STRATEGIES)
+
+
+def resolve_model_strategy(
+    strategy: str | ModelTrainingStrategy = DEFAULT_MODEL_STRATEGY,
+) -> ModelTrainingStrategy:
+    if isinstance(strategy, ModelTrainingStrategy):
+        return strategy
+
+    requested = str(strategy).lower()
+    strategy_key = MODEL_STRATEGY_ALIASES.get(requested, requested)
+    if strategy_key not in MODEL_TRAINING_STRATEGIES:
+        available = ", ".join(available_model_strategies())
+        raise ValueError(f"Estrategia de modelo desconhecida: {strategy}. Opcoes: {available}")
+    return MODEL_TRAINING_STRATEGIES[strategy_key]
+
+
+def model_feature_matrix(df: pd.DataFrame, feature_cols: list[str]) -> pd.DataFrame:
+    return df.reindex(columns=feature_cols).apply(pd.to_numeric, errors="coerce").fillna(0)
+
+
+def train_model(
+    df: pd.DataFrame,
+    round_limit: int,
+    season: int | None = None,
+    tuning: dict | None = None,
+    strategy: str | ModelTrainingStrategy = DEFAULT_MODEL_STRATEGY,
+):
     """
-    Train RandomForest with time validation.
+    Train a regression model with time validation.
     Returns (model, feature_cols, mae).
 
     When `season` is provided and the dataset has a `temporada` column, all
@@ -88,35 +230,41 @@ def train_model(df: pd.DataFrame, round_limit: int, season: int | None = None, t
     if training_df.empty or test_df.empty:
         raise ValueError("Dados insuficientes para treino/validação.")
 
-    X_train, y_train = training_df[feat_cols].fillna(0), training_df["pontos"]
-    X_val,   y_val   = test_df[feat_cols].fillna(0),     test_df["pontos"]
+    X_train, y_train = model_feature_matrix(training_df, feat_cols), training_df["pontos"]
+    X_val,   y_val   = model_feature_matrix(test_df, feat_cols),     test_df["pontos"]
 
-    model = RandomForestRegressor(
-        n_estimators=tuning["n_estimators"],
-        max_depth=tuning["max_depth"],
-        min_samples_leaf=tuning["min_samples_leaf"],
-        random_state=tuning["random_state"],
-        min_samples_split=tuning["min_samples_split"],
-        max_features=tuning["max_features"],
-        n_jobs=tuning["n_jobs"]
-    )
-
-    model.fit(X_train, y_train)
+    training_strategy = resolve_model_strategy(strategy)
+    model = training_strategy.build_model(tuning)
+    model = training_strategy.fit_model(model, X_train, y_train, X_val, y_val, tuning)
 
     mae = mean_absolute_error(y_val, model.predict(X_val))
     log.info(f"Validação MAE: {mae:.3f} pts | Features: {len(feat_cols)}")
     return model, feat_cols, mae
 
 
-def train_models_by_position(df: pd.DataFrame, round_limit: int, season: int | None = None, tuning = TUNING):
+def train_models_by_position(
+    df: pd.DataFrame,
+    round_limit: int,
+    season: int | None = None,
+    tuning: dict | None = None,
+    strategy: str | ModelTrainingStrategy = DEFAULT_MODEL_STRATEGY,
+):
     models = {}
+    training_strategy = resolve_model_strategy(strategy)
 
     for posicao_id, df_pos in df.groupby("posicao_id"):
-        model, feat_cols, mae = train_model(df_pos, round_limit, season, tuning)
+        model, feat_cols, mae = train_model(
+            df_pos,
+            round_limit,
+            season,
+            tuning,
+            training_strategy,
+        )
         models[int(posicao_id)] = {
             "model": model,
             "feature_cols": feat_cols,
             "mae": mae,
+            "strategy": training_strategy.name,
         }
 
     return models
@@ -564,9 +712,9 @@ def build_team(
             continue
 
         feat_cols = model_info["feature_cols"]
-        model: RandomForestRegressor = model_info["model"]
+        model = model_info["model"]
 
-        X = df.loc[mask].reindex(columns=feat_cols).fillna(0)
+        X = model_feature_matrix(df.loc[mask], feat_cols)
         df.loc[mask, "pontos_previstos"] = model.predict(X)
 
     df = df.sort_values("pontos_previstos", ascending=False)
@@ -731,6 +879,15 @@ def prepare_market_data(
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Cartola FC team builder")
+    parser.add_argument(
+        "--model-strategy",
+        choices=available_model_strategies(),
+        default=DEFAULT_MODEL_STRATEGY,
+        help="Metodo de ML usado para treinar os modelos por posicao",
+    )
+    args = parser.parse_args()
+
     api = CartolaAPI()
     rodada_alvo = get_current_round(api)
     df_players_per_round, df_matches, df_odds = read_datasets()
@@ -745,6 +902,7 @@ def main():
         round_limit=rodada_alvo,
         season=CURRENT_SEASON,
         tuning=TUNING,
+        strategy=args.model_strategy,
     )
     feature_cols = feature_cols_from_models(models_by_pos)
     mae = mean_mae_from_models(models_by_pos)
