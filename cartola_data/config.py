@@ -11,6 +11,7 @@ DATA_DIR.mkdir(exist_ok=True)
 CURRENT_SEASON = 2026
 BUDGET = 140.0
 CAPTAIN_BONUS = 1.5
+CAPTAIN_POS = [4, 5]
 
 FORMATION = {
     1: 1,  # GOL
@@ -21,7 +22,7 @@ FORMATION = {
     6: 1,  # TEC
 }
 
-TEC_ODDS_FILTER = {
+ODDS_FILTER = {
     "min_prob_win": 0.20,
     "max_prob_loss": 0.40,
 }

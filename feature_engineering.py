@@ -13,7 +13,8 @@ FEATURE_COLS = [
     "scout_G_5r", "scout_A_5r", "scout_SG_5r",
     "scout_GS_5r", "scout_DE_5r",
     "prob_win", "prob_draw", "prob_loss",
-    "gols_feitos_clube_5r", "gols_sofridos_clube_5r"
+    "gols_feitos_clube_5r", "gols_sofridos_clube_5r",
+    "gols_feitos_adv_5r", "gols_sofridos_adv_5r",
 ]
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -83,16 +84,16 @@ def build_features(
     )
     features_df["mando"] = features_df["mando"].fillna(0)
 
-    match_goal_cols = ["gols_feitos_clube", "gols_sofridos_clube"]
+    club_match_goal_cols = ["gols_feitos_clube", "gols_sofridos_clube"]
     club_group_cols = ["temporada", "clube_id"]
     club_goals_df = (
-        partidas_df[match_keys + match_goal_cols]
+        partidas_df[match_keys + club_match_goal_cols]
         .drop_duplicates(match_keys)
         .sort_values(club_group_cols + ["rodada"])
         .copy()
     )
 
-    for col in match_goal_cols:
+    for col in club_match_goal_cols:
         club_goals_df[f"{col}_5r"] = (
             club_goals_df.groupby(club_group_cols)[col]
             .transform(lambda x: x.shift(1).rolling(5, min_periods=1).mean())
@@ -100,6 +101,34 @@ def build_features(
 
     features_df = features_df.merge(
         club_goals_df[match_keys + ["gols_feitos_clube_5r", "gols_sofridos_clube_5r"]],
+        on=match_keys,
+        how="left",
+    )
+        
+    opponent_goal_features = (
+        partidas_df[match_keys + ["clube_adversario_id"]]
+        .drop_duplicates(match_keys)
+        .merge(
+            club_goals_df[
+                match_keys + ["gols_feitos_clube_5r", "gols_sofridos_clube_5r"]
+            ],
+            left_on=["temporada", "rodada", "clube_adversario_id"],
+            right_on=["temporada", "rodada", "clube_id"],
+            how="left",
+            suffixes=("", "_adv_stats"),
+        )
+        .rename(
+            columns={
+                "gols_feitos_clube_5r": "gols_feitos_adv_5r",
+                "gols_sofridos_clube_5r": "gols_sofridos_adv_5r",
+            }
+        )
+    )
+
+    features_df = features_df.merge(
+        opponent_goal_features[
+            match_keys + ["gols_feitos_adv_5r", "gols_sofridos_adv_5r"]
+        ],
         on=match_keys,
         how="left",
     )

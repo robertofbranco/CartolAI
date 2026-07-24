@@ -48,7 +48,7 @@ def get_players_data(
 ) -> pd.DataFrame:
     """Collect player scores by round from /atletas/pontuados."""
     rows = []
-    clubes = {int(key): value["nome"] for key, value in api.clubes().items()}
+    clubes = {int(key): value.get("nome", "") for key, value in api.clubes().items()}
 
     for rodada in tqdm(rodadas_alvo, desc="Coletando rodadas"):
         try:
@@ -287,6 +287,8 @@ def get_cartola_users_mean(api: CartolaAPI, rodadas_alvo: list[int]) -> pd.DataF
     df = pd.DataFrame(rows)
     if df.empty:
         return df
+    df["media_cartoleiros"] = pd.to_numeric(df["media_cartoleiros"], errors="coerce")
+    df = df.dropna(subset=["media_cartoleiros"])
     return deduplicate_by_key(df, ["rodada"]).sort_values("rodada").reset_index(drop=True)
 
 
