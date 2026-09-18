@@ -11,10 +11,25 @@ FEATURE_SCOUTS = [
     "scout_V"
 ]
 
+PLAYER_FORM_AND_AVAILABILITY_FEATURE_COLS = [
+    # Performance in actual appearances, excluding the target round.
+    "media_pts_ultimas_3_aparicoes",
+    "media_pts_ultimas_5_aparicoes",
+    "std_pts_ultimas_5_aparicoes",
+    # Availability in calendar rounds, excluding the target round.
+    "aparicoes_5r",
+    "aparicoes_10r",
+    "regularidade_5r",
+    "regularidade_10r",
+    "rodadas_desde_ultima_aparicao",
+    "sequencia_aparicoes",
+    "aparicoes_anteriores",
+]
+
 GOL_FEATURE_COLS = [
     "clube_enc", "clube_adv_enc",
     "preco_lag1", #"pts_ultima_rodada",
-    "regularidade_5r",
+    *PLAYER_FORM_AND_AVAILABILITY_FEATURE_COLS,
     "std_pts_3r", "std_pts_5r",
     "media_pts_3r", "media_pts_5r", "media_pts_10r",
     "avg_pts_mando_3r", "avg_pts_mando_5r",
@@ -40,9 +55,10 @@ TEC_FEATURE_COLS = [
     "media_pts_3r", "media_pts_5r", "media_pts_10r",
     "media_pts_delta_3_5r", "media_pts_delta_3_10r", "media_pts_delta_5_10r",
     "regularidade_5r",
+    
     # How the player performs at home vs away
-    "avg_pts_casa_3r", "avg_pts_fora_3r",
-    "avg_pts_casa_5r", "avg_pts_fora_5r",
+    "avg_pts_mando_3r", "avg_pts_mando_5r",
+
     # How the club performed in the last matches    
     "gols_feitos_clube_3r", "gols_sofridos_clube_3r",
     "gols_feitos_adv_3r", "gols_sofridos_adv_3r",
@@ -59,7 +75,7 @@ TEC_FEATURE_COLS = [
 
 FEATURE_COLS = [
     "clube_enc", "clube_adv_enc",
-    "media_lag", "regularidade_5r",
+    "media_lag", *PLAYER_FORM_AND_AVAILABILITY_FEATURE_COLS,
     "prob_win", "prob_draw", "prob_loss",
 
     # How the player performed in the last matches
@@ -134,6 +150,84 @@ def _shift_post_round_market_columns(
     features_df[available_cols] = (
         features_df.groupby(temporal_group_cols)[available_cols].shift(1)
     )
+    return features_df
+
+
+def _add_player_form_and_availability_features(
+    features_df: pd.DataFrame,
+    temporal_group_cols: list[str],
+) -> pd.DataFrame:
+    """Separate performance while playing from availability across rounds.
+
+    Every value is computed from rows before the row being scored. Appearance
+    form ignores rounds in which the athlete did not play, while availability
+    features retain those calendar-round gaps.
+    """
+    features_df = features_df.copy()
+    played = features_df["jogou"].fillna(False).astype(bool)
+    completed_appearance = played & features_df["pontos"].notna()
+    group_keys = [features_df[col] for col in temporal_group_cols]
+
+    appearance_rows = features_df.loc[
+        completed_appearance,
+        temporal_group_cols + ["pontos"],
+    ].copy()
+
+    def shifted_appearance_state(values: pd.Series) -> pd.Series:
+        state = pd.Series(float("nan"), index=features_df.index)
+        state.loc[completed_appearance] = values
+        state = state.groupby(group_keys, sort=False).ffill()
+        return state.groupby(group_keys, sort=False).shift(1)
+
+    for window in (3, 5):
+        appearance_mean = appearance_rows.groupby(temporal_group_cols)["pontos"].transform(
+            lambda x: x.rolling(window, min_periods=1).mean()
+        )
+        features_df[f"media_pts_ultimas_{window}_aparicoes"] = (
+            shifted_appearance_state(appearance_mean)
+        )
+
+    appearance_std = appearance_rows.groupby(temporal_group_cols)["pontos"].transform(
+        lambda x: x.rolling(5, min_periods=1).std().fillna(0)
+    )
+    features_df["std_pts_ultimas_5_aparicoes"] = shifted_appearance_state(
+        appearance_std
+    )
+
+    played_numeric = played.astype(int)
+    for window in (5, 10):
+        features_df[f"aparicoes_{window}r"] = played_numeric.groupby(
+            group_keys, sort=False
+        ).transform(
+            lambda x: x.shift(1).rolling(window, min_periods=1).sum()
+        )
+        features_df[f"regularidade_{window}r"] = played_numeric.groupby(
+            group_keys, sort=False
+        ).transform(
+            lambda x: x.shift(1).rolling(window, min_periods=1).mean()
+        )
+
+    features_df["aparicoes_anteriores"] = played_numeric.groupby(
+        group_keys, sort=False
+    ).transform(lambda x: x.shift(1).fillna(0).cumsum())
+
+    played_round = features_df["rodada"].where(played)
+    previous_played_round = played_round.groupby(group_keys, sort=False).transform(
+        lambda x: x.ffill().shift(1)
+    )
+    features_df["rodadas_desde_ultima_aparicao"] = (
+        features_df["rodada"] - previous_played_round
+    )
+
+    def previous_appearance_streak(values: pd.Series) -> pd.Series:
+        prior_played = values.shift(1).fillna(0).astype(bool)
+        streak_groups = (~prior_played).cumsum()
+        return prior_played.astype(int).groupby(streak_groups).cumsum()
+
+    features_df["sequencia_aparicoes"] = played_numeric.groupby(
+        group_keys, sort=False
+    ).transform(previous_appearance_streak)
+
     return features_df
 
 
@@ -412,6 +506,10 @@ def build_features(
     sort_cols = temporal_group_cols + ["rodada"]
     features_df = features_df.sort_values(sort_cols).copy()
     features_df = _shift_post_round_market_columns(features_df, temporal_group_cols)
+    features_df = _add_player_form_and_availability_features(
+        features_df,
+        temporal_group_cols,
+    )
 
     match_keys = ["temporada", "rodada", "clube_id"]
     match_context_cols = [
@@ -491,11 +589,6 @@ def build_features(
     )
 
     features_df["pts_ultima_rodada"] = features_df.groupby(temporal_group_cols)["pontos"].shift(1)
-
-    features_df["regularidade_5r"] = (
-        features_df.groupby(temporal_group_cols)["jogou"]
-        .transform(lambda x: x.shift(1).rolling(5, min_periods=1).mean())
-    )
 
     odds_cols = ["prob_win", "prob_draw", "prob_loss"]
     available_odds_cols = [col for col in odds_cols if odds_df is not None and col in odds_df.columns]
