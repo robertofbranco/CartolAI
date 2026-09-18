@@ -21,6 +21,7 @@ GOL_FEATURE_COLS = [
     "prob_draw", "prob_loss",
     "mando",
     "gols_sofridos_clube_mando_3r", "gols_feitos_adv_mando_3r",
+    "FD_avd_3r", "FD_adv_5r", # Attack Vol
     # Scouts
     "scout_GS_5r", "scout_CA_5r", "scout_FC_5r",
     "scout_DE_5r", "scout_SG_5r", "scout_G_5r",
@@ -69,9 +70,7 @@ FEATURE_COLS = [
     "media_pts_delta_3_5r", "media_pts_delta_3_10r", #"media_pts_delta_5_10r",    
 
     # How the player performs at home vs away
-    "avg_pts_mando_3r", "avg_pts_mando_5r"
-
-    # ---
+    "avg_pts_mando_3r", "avg_pts_mando_5r",
 
     # How the club performed in the last matches
     "gols_feitos_clube_3r", "gols_sofridos_clube_3r",
@@ -336,6 +335,66 @@ def _add_rolling_club_points_features(
     )
 
 
+def _add_rolling_opponent_fd_features(
+    features_df: pd.DataFrame,
+    partidas_df: pd.DataFrame,
+    match_keys: list[str],
+) -> pd.DataFrame:
+    """Add the opponent's prior average shots saved (FD) per match.
+
+    ``scout_FD`` is cumulative at player level, so it is first converted to a
+    per-round count and then summed for each club.  The feature intentionally
+    keeps the scout count rather than Cartola points (1.2 points per FD).
+    """
+    feature_cols = ["FD_avd_3r", "FD_adv_5r"]
+    required_match_cols = match_keys + ["clube_adversario_id"]
+    if "scout_FD" not in features_df.columns or any(
+        col not in partidas_df.columns for col in required_match_cols
+    ):
+        features_df = features_df.copy()
+        for col in feature_cols:
+            features_df[col] = float("nan")
+        return features_df
+
+    features_df = features_df.copy()
+    player_group_cols = ["temporada", "atleta_id"]
+    features_df["_scout_FD_round"] = (
+        features_df.groupby(player_group_cols)["scout_FD"].diff()
+    )
+    first_player_season_row = features_df.groupby(player_group_cols).cumcount() == 0
+    features_df.loc[first_player_season_row, "_scout_FD_round"] = features_df.loc[
+        first_player_season_row, "scout_FD"
+    ]
+
+    club_fd_df = (
+        features_df[match_keys + ["_scout_FD_round"]]
+        .groupby(match_keys, as_index=False)["_scout_FD_round"]
+        .sum(min_count=1)
+        .sort_values(["temporada", "clube_id", "rodada"])
+    )
+    for window in (3, 5):
+        club_fd_df[f"_FD_clube_{window}r"] = (
+            club_fd_df.groupby(["temporada", "clube_id"])["_scout_FD_round"]
+            .transform(lambda x: x.shift(1).rolling(window, min_periods=1).mean())
+        )
+
+    opponent_fd_df = (
+        partidas_df[required_match_cols]
+        .drop_duplicates(match_keys)
+        .merge(
+            club_fd_df[
+                match_keys + ["_FD_clube_3r", "_FD_clube_5r"]
+            ].rename(columns={"clube_id": "clube_adversario_id"}),
+            on=["temporada", "rodada", "clube_adversario_id"],
+            how="left",
+        )
+        .rename(
+            columns={"_FD_clube_3r": "FD_avd_3r", "_FD_clube_5r": "FD_adv_5r"}
+        )
+    )
+    return features_df.merge(opponent_fd_df[match_keys + feature_cols], on=match_keys, how="left")
+
+
 def build_features(
     players_per_round: pd.DataFrame,
     partidas_df: pd.DataFrame,
@@ -395,6 +454,13 @@ def build_features(
             window,
         )
 
+    features_df = _add_rolling_opponent_fd_features(
+        features_df,
+        partidas_df,
+        match_keys,
+    )
+
+    for window in WINDOWS:
         for col in FEATURE_SCOUTS:
             if col in features_df.columns:
                 round_col = f"{col}_round"
