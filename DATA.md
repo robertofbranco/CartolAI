@@ -25,17 +25,18 @@ colunas de identidade e elenco (`atleta_id`, `apelido`, `posicao_id`,
 `entrou_em_campo` e `scout_*` são resultados da rodada; os scouts são valores
 acumulados na fonte e o projeto calcula a diferença por rodada para as
 features. `preco`, `media` e `jogos` também são tratados como estado
-pós-rodada.
+pós-rodada: na linha R, eles descrevem o mercado aberto depois de R e podem ser
+usados para prever R+1.
 
-Na coleta corrente, quando o histórico caRtola não contém uma rodada, a API de
-pontos é enriquecida com o `mercado_atual` salvo no momento da coleta. Portanto,
-esses campos de mercado podem ser um snapshot posterior, não uma reprodução
-perfeita do fechamento histórico. O deslocamento temporal continua obrigatório.
+Na coleta corrente, a API de pontos só pode complementar a rodada imediatamente
+anterior, cujo estado pós-rodada corresponde ao `mercado_atual`. Rodadas mais
+antigas exigem o snapshot histórico do caRtola; um mercado posterior não pode
+ser associado a elas.
 
 | Momento | Pode ser usado para prever a rodada R? | Exemplos |
 |---|---|---|
 | Antes do fechamento de R | Sim | elenco/posição disponíveis, partida (mando e adversário), odds de R, histórico até R-1 |
-| Depois de R | Não como input de R | `pontos`, `jogou`, scouts, `preco`, `media`, `jogos` registrados na linha R, placar de R |
+| Depois de R | Não como input de R | `pontos`, `jogou`, scouts e placar de R; `preco`, `media` e `jogos` da linha R pertencem ao mercado de R+1 |
 
 Consequentemente, não una uma linha R diretamente ao treino ou mercado da
 própria R sem aplicar a transformação temporal abaixo.

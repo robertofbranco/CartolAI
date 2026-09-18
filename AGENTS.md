@@ -20,8 +20,9 @@ Read `DATA.md` before changing datasets or features. The key invariant is that
 each `jogadores_por_rodada` row is post-round state keyed by
 `(temporada, rodada, atleta_id)`.
 
-- `pontos`, played status, `scout_*`, `preco`, `media`, and `jogos` from row R
-  must not become inputs for predicting R.
+- `pontos`, played status, and `scout_*` from row R are post-round outcomes and
+  must not predict R. Row R `preco`, `media`, `jogos`, and market status describe
+  the market opened after R and are inputs for R+1.
 - Preserve the shifts in `build_features()`: market values are shifted by one
   player-round and rolling player/club/scout features use prior rounds only.
 - Preserve the backtest boundary: target-round roster/context may be used, but
@@ -35,9 +36,11 @@ each `jogadores_por_rodada` row is post-round state keyed by
 - Keep `data/<dataset>_<year>.parquet` as collection partitions. The collector
   merges them into `data/<dataset>.parquet`; merge keys are season, round, and
   athlete or club as appropriate. Deduplication prefers a played player row.
-- Keep collection sources and fallback order explicit. Historical players come
-  from caRtola; current missing rounds use the Cartola API; CBF supplies
-  supported historical scores; Gato Mestre supplies odds with `CARTOLA_TOKEN`.
+- Keep collection sources and fallback order explicit. Historical player rows
+  come from caRtola. The Cartola points API plus `mercado_atual` may complement
+  only the immediately completed round; older missing rounds require caRtola.
+  CBF supplies supported historical scores; Gato Mestre supplies odds with
+  `CARTOLA_TOKEN`.
 - Runtime settings belong in `cartola_data/config.py`: season, formation,
   odds filter, captain settings, and model tuning. Do not invent CLI options
   that the parsers do not expose.

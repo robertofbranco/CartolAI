@@ -6,6 +6,7 @@ import pandas as pd
 
 from cartola_data.config import CAPTAIN_BONUS
 import cartola_backtest as backtest
+from cartola_team_builder import build_target_round_market_features
 
 
 class BacktestCaptainTest(unittest.TestCase):
@@ -124,7 +125,7 @@ class BacktestCaptainTest(unittest.TestCase):
         )
         target_market = players[players["rodada"] == 2].copy()
 
-        market = backtest.simulated_market_features_for_round(
+        market = build_target_round_market_features(
             df_players_per_round=players,
             df_matches=matches,
             df_odds=pd.DataFrame(columns=["temporada", "rodada", "clube_id"]),

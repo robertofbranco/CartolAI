@@ -1,6 +1,9 @@
 import unittest
 from contextlib import redirect_stdout
 from io import StringIO
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 from lightgbm import LGBMRegressor
@@ -8,6 +11,7 @@ from sklearn.ensemble import RandomForestRegressor
 
 from cartola_data.config import CAPTAIN_BONUS
 from cartola_data.config import STATUS
+import cartola_team_builder as team_builder
 from cartola_model_training import (
     DEFAULT_MODEL_STRATEGY,
     GRADIENT_BOOSTING_STRATEGY,
@@ -17,10 +21,12 @@ from cartola_model_training import (
 from cartola_team_builder import (
     assign_captain,
     apply_reserve_substitutions,
+    build_target_round_market_features,
     build_team,
     imprimir_time,
     lineup_output_table,
     merge_target_round_match_context,
+    prepare_market_data,
     refresh_opponent_encoding_from_features,
     score_with_captain_bonus,
 )
@@ -100,6 +106,142 @@ class ModelTrainingStrategyTest(unittest.TestCase):
             self.assertEqual(model_info["strategy"], GRADIENT_BOOSTING_STRATEGY)
             self.assertIn("media_pts_5r", model_info["feature_cols"])
             self.assertGreaterEqual(model_info["mae"], 0.0)
+
+
+class TargetRoundFeaturesTest(unittest.TestCase):
+    @staticmethod
+    def player_history() -> pd.DataFrame:
+        return pd.DataFrame(
+            [
+                {
+                    "temporada": 2026,
+                    "rodada": 1,
+                    "atleta_id": 100,
+                    "apelido": "Mei 1",
+                    "posicao_id": 4,
+                    "clube_id": 1,
+                    "status_id": STATUS["Provavel"],
+                    "pontos": 5.0,
+                    "jogou": True,
+                    "preco": 10.0,
+                    "media": 5.0,
+                    "jogos": 1,
+                    "scout_G": 0.0,
+                },
+                {
+                    "temporada": 2026,
+                    "rodada": 2,
+                    "atleta_id": 100,
+                    "apelido": "Mei 1",
+                    "posicao_id": 4,
+                    "clube_id": 1,
+                    "status_id": STATUS["Provavel"],
+                    "pontos": 7.0,
+                    "jogou": True,
+                    "preco": 12.0,
+                    "media": 6.0,
+                    "jogos": 2,
+                    "scout_G": 1.0,
+                },
+            ]
+        )
+
+    @staticmethod
+    def matches() -> pd.DataFrame:
+        return pd.DataFrame(
+            [
+                {
+                    "temporada": 2026,
+                    "rodada": rodada,
+                    "clube_id": 1,
+                    "mando": 1,
+                    "clube_adversario_id": 2,
+                    "gols_feitos_clube": 1,
+                    "gols_sofridos_clube": 0,
+                }
+                for rodada in [1, 2, 3]
+            ]
+        )
+
+    def test_target_round_includes_previous_round_results_only(self):
+        target_market = pd.DataFrame(
+            [
+                {
+                    "atleta_id": 100,
+                    "apelido": "Mei 1",
+                    "posicao_id": 4,
+                    "clube_id": 1,
+                    "status_id": STATUS["Provavel"],
+                    "preco": 50.0,
+                    "media": 40.0,
+                    "jogos": 3,
+                    "pontos": 100.0,
+                    "jogou": True,
+                    "scout_G": 100.0,
+                }
+            ]
+        )
+
+        market = build_target_round_market_features(
+            df_players_per_round=self.player_history(),
+            df_matches=self.matches(),
+            df_odds=pd.DataFrame(
+                columns=["temporada", "rodada", "clube_id", "prob_win", "prob_draw", "prob_loss"]
+            ),
+            df_market=target_market,
+            season=2026,
+            rodada_alvo=3,
+        )
+
+        row = market.iloc[0]
+        self.assertEqual(row["media_pts_3r"], 6.0)
+        self.assertEqual(row["pts_ultima_rodada"], 7.0)
+        self.assertEqual(row["scout_G_3r"], 0.5)
+        self.assertTrue(pd.isna(row["pontos"]))
+        self.assertEqual(row["preco_lag1"], 12.0)
+        self.assertEqual(row["preco"], 12.0)
+
+    def test_prepare_market_data_builds_target_features_and_keeps_live_price(self):
+        with TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            pd.DataFrame(
+                [
+                    {
+                        "atleta_id": 100,
+                        "apelido": "Mei 1",
+                        "posicao_id": 4,
+                        "clube_id": 1,
+                        "status_id": STATUS["Provavel"],
+                        "preco": 13.0,
+                        "media": 6.5,
+                        "jogos": 2,
+                    }
+                ]
+            ).to_parquet(data_dir / "mercado_atual.parquet", index=False)
+            api = MagicMock()
+            api.clubes.return_value = {"1": {"nome": "Clube A"}, "2": {"nome": "Clube B"}}
+
+            with (
+                patch.object(team_builder, "DATA_DIR", data_dir),
+                patch.object(team_builder, "CartolaAPI", return_value=api),
+            ):
+                market = prepare_market_data(
+                    self.player_history(),
+                    rodada_alvo=3,
+                    season=2026,
+                    df_odds=pd.DataFrame(
+                        columns=["temporada", "rodada", "clube_id", "prob_win", "prob_draw", "prob_loss"]
+                    ),
+                    df_matches=self.matches(),
+                )
+
+        row = market.iloc[0]
+        self.assertEqual(row["media_pts_3r"], 6.0)
+        self.assertEqual(row["preco_lag1"], 12.0)
+        self.assertEqual(row["preco"], 13.0)
+        self.assertEqual(row["media"], 6.5)
+        self.assertEqual(row["status_id"], STATUS["Provavel"])
+        self.assertEqual(row["adversario"], "Clube B")
 
 
 class TeamBuilderReservesTest(unittest.TestCase):

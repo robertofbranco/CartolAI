@@ -150,6 +150,45 @@ class CollectAllDataFlowTest(unittest.TestCase):
 
             self.assertFalse((data_dir / "jogadores_por_rodada_2026.parquet").exists())
 
+    def test_get_players_data_requires_archive_for_older_missing_rounds(self):
+        existing_players = pd.DataFrame(
+            [{"temporada": 2026, "rodada": 1, "atleta_id": 101, "clube_id": 263}]
+        )
+        archive_players = pd.DataFrame(
+            [{"temporada": 2026, "rodada": 4, "atleta_id": 104, "clube_id": 263}]
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            existing_players.to_parquet(
+                data_dir / "jogadores_por_rodada_2026.parquet",
+                index=False,
+            )
+            api = MagicMock()
+            with (
+                patch.object(collect_latest_data, "DATA_DIR", data_dir),
+                patch.object(collect_latest_data, "CURRENT_SEASON", 2026),
+                patch.object(
+                    collect_latest_data,
+                    "get_players_data_from_caRtola",
+                    return_value=archive_players,
+                ),
+                patch.object(
+                    collect_latest_data,
+                    "get_round_players_data_from_cartola",
+                ) as get_api_players,
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "Dados de jogadores para rodadas 2, 3",
+                ):
+                    collect_latest_data.get_previous_round_players_data(
+                        api,
+                        current_round=5,
+                    )
+
+            get_api_players.assert_not_called()
+
     def test_latest_round_players_data_uses_current_market_snapshot(self):
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)
@@ -213,7 +252,7 @@ class CollectAllDataFlowTest(unittest.TestCase):
             ):
                 collect_latest_data.run_collectors(args)
 
-            cartola_api.assert_called_once_with()
+            cartola_api.assert_called_once_with(token="token-123")
             get_round.assert_called_once_with(api)
             update_market.assert_called_once_with(api)
             update_odds.assert_called_once_with(api, 5, 2026, "token-123")
