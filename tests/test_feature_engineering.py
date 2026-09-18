@@ -800,5 +800,51 @@ class FeatureEngineeringTest(unittest.TestCase):
         self.assertEqual(round_3["scout_FF_5r"], 0.5)
         self.assertEqual(round_3["scout_FT_5r"], 0.5)
 
+    def test_adds_opponent_fd_volume_from_raw_scout_counts(self):
+        players = pd.DataFrame(
+            [
+                {
+                    "temporada": 2026,
+                    "rodada": rodada,
+                    "atleta_id": atleta_id,
+                    "clube_id": clube_id,
+                    "pontos": 0.0,
+                    "jogou": True,
+                    "preco": 10.0,
+                    "scout_FD": fd,
+                }
+                for rodada, fd in enumerate([2, 6, 12, 20, 30], start=1)
+                for atleta_id, clube_id, fd in [(100, 1, 0), (200, 2, fd)]
+            ]
+        )
+        matches = pd.DataFrame(
+            [
+                {
+                    "temporada": 2026,
+                    "rodada": rodada,
+                    "clube_id": clube_id,
+                    "mando": 1 if clube_id == 1 else 0,
+                    "clube_adversario_id": 2 if clube_id == 1 else 1,
+                    "gols_feitos_clube": 0,
+                    "gols_sofridos_clube": 0,
+                }
+                for rodada in range(1, 6)
+                for clube_id in [1, 2]
+            ]
+        )
+
+        features = build_features(players, matches, pd.DataFrame())
+        round_1 = features.loc[
+            (features["rodada"] == 1) & (features["clube_id"] == 1)
+        ].iloc[0]
+        round_5 = features.loc[
+            (features["rodada"] == 5) & (features["clube_id"] == 1)
+        ].iloc[0]
+
+        self.assertTrue(pd.isna(round_1["FD_avd_3r"]))
+        # Opponent FD per round is 2, 4, 6, 8, 10.  Round 5 uses only 2, 4, 6, 8.
+        self.assertEqual(round_5["FD_avd_3r"], 6.0)
+        self.assertEqual(round_5["FD_adv_5r"], 5.0)
+
 if __name__ == "__main__":
     unittest.main()
