@@ -70,6 +70,8 @@ DEFAULT_LIGAS = [
     "1-mata-mata-brothers-do-graia-2026",
     "2o-mata-mata-brothers-do-graia",
     "3-mata-mata-brothers-do-graia-2026",
+    "4-mata-mata-brothers-do-graia-2026",
+    "5o-mata-mata-brothers-do-graia",
 ]
 
 NOME_TO_ABBR = {
