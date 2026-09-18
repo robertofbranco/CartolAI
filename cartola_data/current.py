@@ -330,9 +330,9 @@ def get_cartola_users_mean(api: CartolaAPI, rodadas_alvo: list[int]) -> pd.DataF
 def get_league_brackets(api: CartolaAPI, ligas: list[str]) -> pd.DataFrame:
     rows = []
     for liga in ligas:
-        chaves_mata_mata = api.league(liga).get("chaves_mata_mata", {})
+        chaves_mata_mata: dict = api.league(liga).get("chaves_mata_mata", {})
         for rodada, chaves in chaves_mata_mata.items():
-            for chave_index, chave in enumerate(chaves):
+            for chave_index, chave in enumerate(chaves):                
                 if chave.get("vencedor_id") is None:
                     break
 
@@ -363,23 +363,48 @@ def _has_round(df: pd.DataFrame, rodada: int) -> bool:
     return "rodada" in df.columns and rodada in df["rodada"].dropna().astype(int).unique()
 
 
-def update_odds(api: CartolaAPI, current_round: int, season: int, token: str):
+def update_odds(api: CartolaAPI, current_round: int, season: int, token: str) -> None:
     if not token:
         log.info("CARTOLA_TOKEN nao definido - odds nao coletadas.")
         return
-    
+
+    if current_round is None or current_round < 2:
+        log.info("Nenhuma rodada com odds para coletar.")
+        return
+
     odds_dataset = OddsDataset(season=season)
     odds_df = odds_dataset.read_or_empty()
     gato_api = GatoMestreAPI(token=token, temporada=season)
-    new_odds = get_odds(gato_api, api.clubes(), [current_round], temporada=season)
+
+    target_rounds = list(range(2, current_round + 1))
+    rounds_to_fetch = [
+        i_round
+        for i_round in target_rounds
+        if i_round == current_round or not _has_round(odds_df, i_round)
+    ]
+    if not rounds_to_fetch:
+        return
+
+    new_odds = get_odds(
+        gato_api,
+        api.clubes(),
+        rounds_to_fetch,
+        temporada=season,
+    )
     if new_odds.empty:
-        log.warning(f"Odds indisponiveis para a rodada {current_round}")
-    elif _has_round(odds_df, current_round):
-        odds_df = odds_df[~((odds_df["temporada"] == season) & (odds_df["rodada"] == current_round))]
-        odds_df = pd.concat([odds_df, new_odds])
-        odds_file = odds_dataset.write(odds_df)
-    else:
-        odds_file = odds_dataset.append(new_odds)
+        log.warning("Odds indisponiveis para as rodadas %s", rounds_to_fetch)
+        return
+
+    collected_rounds = set(new_odds["rodada"].dropna().astype(int).unique())
+    if not odds_df.empty and "rodada" in odds_df.columns:
+        odds_df = odds_df[~odds_df["rodada"].isin(collected_rounds)]
+
+    odds_df = pd.concat([odds_df, new_odds], ignore_index=True)
+    odds_df = deduplicate_by_key(
+        odds_df,
+        ["temporada", "rodada", "clube_id"],
+    )
+    odds_file = odds_dataset.write(odds_df)
 
     log.info("Odds salvas: %s -> %s", len(new_odds), odds_file)
 
@@ -396,29 +421,31 @@ def update_market(api: CartolaAPI):
 def collect_latest_api_data(
     api: CartolaAPI,
     current_round: int,
-    season: int = CURRENT_SEASON,    
-):
-    """Collect live Cartola/Gato Mestre data and persist project datasets."""
-    previous_round = current_round - 1    
-
-    if not current_round:
+    season: int = CURRENT_SEASON,
+) -> None:
+    """Collect completed-round Cartola/Gato Mestre data and persist it."""
+    if current_round is None or current_round < 1:
         log.error("Nenhuma rodada para coletar.")
         return
-        
+
     matches_dataset = MatchesDataset(season=season)
     matches_df = matches_dataset.read_or_empty()
-    if not _has_round(matches_df, current_round):
-        new_matches = preparar_partidas(api, [current_round], temporada=season)
-        matches_file = matches_dataset.append(new_matches)
-        log.info("Partidas salvas: %s -> %s", len(new_matches), matches_file)
 
-    users_mean_dataset = CartolaUsersMeanDataset()
+    users_mean_dataset = CartolaUsersMeanDataset(season=season)
     users_mean_df = users_mean_dataset.read_or_empty()
-    if not _has_round(users_mean_df, previous_round):
-        user_means = get_cartola_users_mean(api, [previous_round])
-        if not user_means.empty:
-            user_means_file = users_mean_dataset.append(user_means)
-            log.info("Médias dos cartoleiros salvas: %s -> %s", len(user_means), user_means_file)
+
+    for i_round in range(1, current_round):
+        if not _has_round(matches_df, i_round):
+            new_matches = preparar_partidas(api, [i_round], temporada=season)
+            if not new_matches.empty:
+                matches_dataset.append(new_matches)
+                log.info("Partidas salvas para a rodada %s.", i_round)
+
+        if not _has_round(users_mean_df, i_round):
+            user_means = get_cartola_users_mean(api, [i_round])
+            if not user_means.empty:
+                users_mean_dataset.append(user_means)
+                log.info("Médias dos cartoleiros salvas para a rodada %s.", i_round)
 
     league_brackets = get_league_brackets(api, DEFAULT_LIGAS)
     if not league_brackets.empty:

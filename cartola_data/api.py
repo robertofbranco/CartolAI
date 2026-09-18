@@ -37,10 +37,8 @@ class JsonAPIClient:
         if not verify_ssl:
             requests.packages.urllib3.disable_warnings()
 
-    def get_json(self, path: str, use_cache: bool = True) -> dict:
-        cache_file = self.cache_dir / safe_filename(f"{path}.json")
-        if use_cache and cache_file.exists():
-            return json.loads(cache_file.read_text(encoding="utf-8"))
+    def get_json(self, path: str) -> dict:
+        cache_file = self.cache_dir / safe_filename(f"{path}.json")        
 
         url = f"{self.base_url}{path}"
         for attempt in range(3):
@@ -48,11 +46,6 @@ class JsonAPIClient:
                 response = self.session.get(url, timeout=15, verify=self.verify_ssl)
                 response.raise_for_status()
                 data = response.json()
-                if use_cache:
-                    cache_file.write_text(
-                        json.dumps(data, ensure_ascii=False),
-                        encoding="utf-8",
-                    )
                 return data
             except requests.RequestException as exc:
                 log.warning("Attempt %s failed for %s: %s", attempt + 1, path, exc)
@@ -67,14 +60,14 @@ class CartolaAPI(JsonAPIClient):
     def __init__(self, token: str | None = None, cache_dir: Path = DATA_DIR / "cache"):
         super().__init__(BASE_URL, token=token, cache_dir=cache_dir)
 
-    def _get(self, path: str, use_cache: bool = True) -> dict:
-        return self.get_json(path, use_cache=use_cache)
+    def _get(self, path: str) -> dict:
+        return self.get_json(path)
 
     def market_status(self) -> dict:
-        return self._get("/mercado/status", use_cache=False)
+        return self._get("/mercado/status")
 
     def mercado(self) -> dict:
-        return self._get("/atletas/mercado", use_cache=False)
+        return self._get("/atletas/mercado")
 
     def atletas_mercado(self) -> dict:
         return self.mercado()
@@ -91,13 +84,13 @@ class CartolaAPI(JsonAPIClient):
 
     def partidas(self, rodada: int | None = None) -> dict:
         path = f"/partidas/{rodada}" if rodada else "/partidas"
-        return self._get(path, use_cache=rodada is not None)
+        return self._get(path)
 
     def pos_rodada(self, rodada: int) -> dict:
-        return self._get(f"/pos-rodada/destaques/{rodada}", use_cache=bool(rodada))
+        return self._get(f"/pos-rodada/destaques/{rodada}")
 
     def league(self, liga: str) -> dict:
-        return self._get(f"/auth/liga/{liga}?orderBy=rodada", use_cache=True)
+        return self._get(f"/auth/liga/{liga}?orderBy=rodada")
 
 
 class GatoMestreAPI:
@@ -121,10 +114,7 @@ class GatoMestreAPI:
         )
 
     def favoritos(self, rodada: int) -> dict:
-        index = rodada - 1
-        cache_file = self.cache_dir / f"gato_favoritos_{self.temporada}_r{rodada}.json"
-        if cache_file.exists():
-            return json.loads(cache_file.read_text(encoding="utf-8"))
+        index = rodada - 1        
 
         url = (
             f"{GATOMESTRE_BASE}/api/v2/equipes/{self.temporada}"
@@ -135,10 +125,6 @@ class GatoMestreAPI:
                 response = self.session.get(url, timeout=15)
                 response.raise_for_status()
                 data = response.json()
-                cache_file.write_text(
-                    json.dumps(data, ensure_ascii=False),
-                    encoding="utf-8",
-                )
                 return data
             except requests.RequestException as exc:
                 log.warning(

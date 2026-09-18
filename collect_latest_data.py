@@ -20,6 +20,7 @@ from cartola_data.api import CartolaAPI
 from cartola_data.current import (
     get_current_round,
     get_round_players_data_from_cartola,
+    missing_rounds,
     update_market,
     update_odds,
 )
@@ -97,42 +98,59 @@ def find_yearly_parquets(
 
 
 def get_previous_round_players_data(api, current_round: int) -> bool:
-    target_round = current_round - 1
+    if current_round is None or current_round < 2:
+        log.info("Nenhuma rodada concluida de jogadores para coletar.")
+        return True
+
     players_dataset = PlayersDataset(season=CURRENT_SEASON, data_dir=DATA_DIR)
-    players = players_dataset.read_or_empty()    
-    
-    new_players = get_players_data_from_caRtola(CURRENT_SEASON, [target_round])
+    players = players_dataset.read_or_empty()
+    target_rounds = list(range(1, current_round))
+    rounds_to_fetch = missing_rounds(players, target_rounds)
+    if not rounds_to_fetch:
+        return True
 
-    if new_players.empty:
-        log.info("Coletando rodada %s pela API do cartola.", target_round)
-        new_players = get_round_players_data_from_cartola(
+    collected_frames = []
+    archive_players = get_players_data_from_caRtola(CURRENT_SEASON, rounds_to_fetch)
+    if not archive_players.empty:
+        collected_frames.append(archive_players)
+
+    api_rounds = missing_rounds(archive_players, rounds_to_fetch)
+    unavailable_rounds = []
+    for i_round in api_rounds:
+        log.info("Coletando rodada %s pela API do cartola.", i_round)
+        round_players = get_round_players_data_from_cartola(
             api,
-            target_round,
-            temporada=CURRENT_SEASON
+            i_round,
+            temporada=CURRENT_SEASON,
         )
+        if round_players.empty:
+            unavailable_rounds.append(i_round)
+        else:
+            collected_frames.append(round_players)
 
-    if new_players.empty:
-        raise RuntimeError(
-            f"Dados de jogadores para rodada {target_round} ainda não estão disponíveis."
+    if collected_frames:
+        players = pd.concat([players, *collected_frames], ignore_index=True)
+        players = deduplicate_by_key(
+            players,
+            ["temporada", "rodada", "atleta_id"],
+            prefer_played=True,
         )
-
-    players = pd.concat([players, new_players], ignore_index=True)
-    log.info(
+        players_dataset.write(players)
+        log.info(
             "Historico %s salvo: %s rodadas, %s atletas -> %s",
             CURRENT_SEASON,
             players["rodada"].nunique(),
             players["atleta_id"].nunique(),
             players_dataset.path,
         )
-    
-    if not players.empty:
-        players = deduplicate_by_key(
-            players,
-            ["temporada", "rodada", "atleta_id"],
-            prefer_played=True,
+
+    if unavailable_rounds:
+        label = "rodada" if len(unavailable_rounds) == 1 else "rodadas"
+        round_list = ", ".join(map(str, unavailable_rounds))
+        raise RuntimeError(
+            f"Dados de jogadores para {label} {round_list} ainda não estão disponíveis."
         )
 
-    players_dataset.write(players)
     return True
             
 
@@ -174,7 +192,7 @@ def merge_partitioned_parquets(
 
 def run_collectors(args: argparse.Namespace) -> None:
     token = os.environ.get("CARTOLA_TOKEN")
-    api = CartolaAPI()
+    api = CartolaAPI(token=token)
     current_round = get_current_round(api)
     update_market(api)
     update_odds(api, current_round, CURRENT_SEASON, token)

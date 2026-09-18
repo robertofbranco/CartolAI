@@ -753,8 +753,8 @@ def gerar_relatorio(resultados: list[ResultadoRodada], output_dir: str | Path = 
 def main():
     parser = argparse.ArgumentParser(description="Cartola FC — Backtesting Engine")
     parser.add_argument("--temporada",  type=int, default=CURRENT_SEASON,    help="Primeira rodada a testar (mín. 6)")
-    parser.add_argument("--inicio",     type=int, default=10,    help="Primeira rodada a testar (mín. 6)")
-    parser.add_argument("--fim",        type=int, default=17,   help="Última rodada a testar")
+    parser.add_argument("--inicio",     type=int, default=15,    help="Primeira rodada a testar (mín. 6)")
+    parser.add_argument("--fim",        type=int, default=27,   help="Última rodada a testar")
     parser.add_argument(
         "--output-folder",
         type=Path,
