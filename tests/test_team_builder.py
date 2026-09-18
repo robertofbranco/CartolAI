@@ -23,6 +23,7 @@ from cartola_team_builder import (
     apply_reserve_substitutions,
     build_target_round_market_features,
     build_team,
+    impute_model_features,
     imprimir_time,
     lineup_output_table,
     merge_target_round_match_context,
@@ -35,6 +36,22 @@ from cartola_team_builder import (
 class ScoreModel:
     def predict(self, X):
         return X["score"].to_numpy()
+
+
+class ModelFeatureImputationTest(unittest.TestCase):
+    def test_nullable_integer_feature_accepts_fractional_position_median(self):
+        market = pd.DataFrame(
+            {
+                "posicao_id": [4, 4, 4, 5],
+                "aparicoes_5r": pd.Series([1, 2, pd.NA, pd.NA], dtype="Int64"),
+            }
+        )
+
+        result = impute_model_features(market, ["aparicoes_5r"])
+
+        self.assertEqual(result["aparicoes_5r"].dtype, "float64")
+        self.assertEqual(result.loc[2, "aparicoes_5r"], 1.5)
+        self.assertEqual(result.loc[3, "aparicoes_5r"], 0.0)
 
 
 def training_frame():
@@ -242,6 +259,88 @@ class TargetRoundFeaturesTest(unittest.TestCase):
         self.assertEqual(row["media"], 6.5)
         self.assertEqual(row["status_id"], STATUS["Provavel"])
         self.assertEqual(row["adversario"], "Clube B")
+
+    def test_prepare_market_data_keeps_goalkeeper_attack_volume_features(self):
+        history = pd.DataFrame(
+            [
+                {
+                    "temporada": 2026,
+                    "rodada": rodada,
+                    "atleta_id": atleta_id,
+                    "apelido": apelido,
+                    "posicao_id": posicao_id,
+                    "clube_id": clube_id,
+                    "status_id": STATUS["Provavel"],
+                    "pontos": pontos,
+                    "jogou": True,
+                    "preco": preco,
+                    "media": pontos,
+                    "jogos": rodada,
+                    "scout_FD": scout_fd,
+                }
+                for rodada, values in [
+                    (1, [(100, "Gol 1", 1, 1, 5.0, 10.0, 0.0), (200, "Ata 1", 5, 2, 3.0, 8.0, 2.0)]),
+                    (2, [(100, "Gol 1", 1, 1, 6.0, 11.0, 0.0), (200, "Ata 1", 5, 2, 4.0, 9.0, 5.0)]),
+                ]
+                for atleta_id, apelido, posicao_id, clube_id, pontos, preco, scout_fd in values
+            ]
+        )
+        matches = pd.DataFrame(
+            [
+                {
+                    "temporada": 2026,
+                    "rodada": rodada,
+                    "clube_id": clube_id,
+                    "mando": mando,
+                    "clube_adversario_id": adversario_id,
+                    "gols_feitos_clube": 1,
+                    "gols_sofridos_clube": 0,
+                }
+                for rodada in [1, 2, 3]
+                for clube_id, mando, adversario_id in [(1, 1, 2), (2, -1, 1)]
+            ]
+        )
+
+        with TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            pd.DataFrame(
+                [
+                    {
+                        "atleta_id": atleta_id,
+                        "apelido": apelido,
+                        "posicao_id": posicao_id,
+                        "clube_id": clube_id,
+                        "status_id": STATUS["Provavel"],
+                        "preco": preco,
+                        "media": media,
+                        "jogos": 2,
+                    }
+                    for atleta_id, apelido, posicao_id, clube_id, preco, media in [
+                        (100, "Gol 1", 1, 1, 12.0, 5.5),
+                        (200, "Ata 1", 5, 2, 10.0, 3.5),
+                    ]
+                ]
+            ).to_parquet(data_dir / "mercado_atual.parquet", index=False)
+            api = MagicMock()
+            api.clubes.return_value = {"1": {"nome": "Clube A"}, "2": {"nome": "Clube B"}}
+
+            with (
+                patch.object(team_builder, "DATA_DIR", data_dir),
+                patch.object(team_builder, "CartolaAPI", return_value=api),
+            ):
+                market = prepare_market_data(
+                    history,
+                    rodada_alvo=3,
+                    season=2026,
+                    df_odds=pd.DataFrame(
+                        columns=["temporada", "rodada", "clube_id", "prob_win", "prob_draw", "prob_loss"]
+                    ),
+                    df_matches=matches,
+                )
+
+        goalkeeper = market.loc[market["atleta_id"] == 100].iloc[0]
+        self.assertEqual(goalkeeper["FD_avd_3r"], 2.5)
+        self.assertEqual(goalkeeper["FD_adv_5r"], 2.5)
 
 
 class TeamBuilderReservesTest(unittest.TestCase):

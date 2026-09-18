@@ -132,6 +132,59 @@ class FeatureEngineeringTest(unittest.TestCase):
         self.assertEqual(round_3["preco_lag1"], 12.0)
         self.assertEqual(round_3["media_lag"], 6.0)
 
+    def test_separates_appearance_form_from_round_availability(self):
+        played_by_round = [False, True, False, True, True, pd.NA]
+        points_by_round = [0.0, 4.0, 0.0, 8.0, 6.0, pd.NA]
+        players = pd.DataFrame(
+            [
+                {
+                    "temporada": 2026,
+                    "rodada": rodada,
+                    "atleta_id": 100,
+                    "clube_id": 1,
+                    "pontos": points_by_round[rodada - 1],
+                    "jogou": played_by_round[rodada - 1],
+                    "preco": 10.0,
+                    "media": 5.0,
+                }
+                for rodada in range(1, 7)
+            ]
+        )
+        matches = pd.DataFrame(
+            [
+                {
+                    "temporada": 2026,
+                    "rodada": rodada,
+                    "clube_id": 1,
+                    "mando": 1,
+                    "clube_adversario_id": 2,
+                    "gols_feitos_clube": 1,
+                    "gols_sofridos_clube": 0,
+                }
+                for rodada in range(1, 7)
+            ]
+        )
+
+        features = build_features(players, matches, pd.DataFrame())
+
+        round_4 = features.loc[features["rodada"] == 4].iloc[0]
+        self.assertEqual(round_4["media_pts_ultimas_3_aparicoes"], 4.0)
+        self.assertEqual(round_4["aparicoes_5r"], 1.0)
+        self.assertEqual(round_4["rodadas_desde_ultima_aparicao"], 2.0)
+        self.assertEqual(round_4["sequencia_aparicoes"], 0.0)
+
+        target_round = features.loc[features["rodada"] == 6].iloc[0]
+        self.assertEqual(target_round["media_pts_ultimas_3_aparicoes"], 6.0)
+        self.assertEqual(target_round["media_pts_ultimas_5_aparicoes"], 6.0)
+        self.assertEqual(target_round["std_pts_ultimas_5_aparicoes"], 2.0)
+        self.assertEqual(target_round["aparicoes_5r"], 3.0)
+        self.assertEqual(target_round["aparicoes_10r"], 3.0)
+        self.assertEqual(target_round["regularidade_5r"], 0.6)
+        self.assertEqual(target_round["regularidade_10r"], 0.6)
+        self.assertEqual(target_round["rodadas_desde_ultima_aparicao"], 1.0)
+        self.assertEqual(target_round["sequencia_aparicoes"], 2.0)
+        self.assertEqual(target_round["aparicoes_anteriores"], 3.0)
+
     def test_adds_same_mando_point_averages_from_prior_rounds(self):
         players = pd.DataFrame(
             [

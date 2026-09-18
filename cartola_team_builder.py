@@ -5,7 +5,12 @@ import pandas as pd
 from dotenv import load_dotenv
 
 from cartola_data.current import get_current_round
-from feature_engineering import FEATURE_COLS, build_features
+from feature_engineering import (
+    FEATURE_COLS,
+    GOL_FEATURE_COLS,
+    TEC_FEATURE_COLS,
+    build_features,
+)
 from cartola_model_training import (
     DEFAULT_MODEL_STRATEGY,
     available_model_strategies,
@@ -36,6 +41,9 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger(__name__)
 
 ODDS_COLS = ["prob_win", "prob_draw", "prob_loss"]
+MODEL_FEATURE_COLS = list(
+    dict.fromkeys(FEATURE_COLS + GOL_FEATURE_COLS + TEC_FEATURE_COLS)
+)
 POS_THRESHOLD = [1, 2, 3, 4, 5, 6]
 TEC_POSITION_ID = 6
 LUXURY_RESERVE_POSITIONS = (4, 5)
@@ -59,6 +67,25 @@ LINEUP_OUTPUT_COLUMNS = [
     "reserva_de_luxo",
     "capitao",
 ]
+
+
+def impute_model_features(
+    market_df: pd.DataFrame,
+    feature_cols: list[str],
+) -> pd.DataFrame:
+    """Convert model inputs to floats and fill gaps by position median."""
+    market_df = market_df.copy()
+    for col in feature_cols:
+        if col not in market_df.columns:
+            continue
+
+        numeric_values = pd.to_numeric(market_df[col], errors="coerce").astype(float)
+        position_median = numeric_values.groupby(market_df["posicao_id"]).transform(
+            "median"
+        )
+        market_df[col] = numeric_values.fillna(position_median).fillna(0.0)
+
+    return market_df
 
 
 def merge_target_round_odds(
@@ -1083,11 +1110,7 @@ def prepare_market_data(
             market_df[col] = market_df[current_col].combine_first(market_df[col])
             market_df = market_df.drop(columns=current_col)
 
-    for col in FEATURE_COLS:
-        if col in market_df.columns:
-            market_df[col] = market_df[col].fillna(
-                market_df.groupby("posicao_id")[col].transform("median")
-            ).fillna(0)
+    market_df = impute_model_features(market_df, MODEL_FEATURE_COLS)
 
     market_df = merge_target_round_match_context(
         market_df,

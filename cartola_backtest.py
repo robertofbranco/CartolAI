@@ -35,6 +35,7 @@ from cartola_team_builder import (
     apply_reserve_substitutions,
     build_target_round_market_features,
     build_team,
+    impute_model_features,
     lineup_output_table,
     score_with_captain_bonus,
     CAPTAIN_COL
@@ -443,11 +444,7 @@ def rodar_backtest(
             rodada_alvo=rodada_alvo,
         )
 
-        for col in feat_cols:
-            if col in df_mercado_sim.columns:
-                df_mercado_sim[col] = df_mercado_sim[col].fillna(
-                    df_mercado_sim.groupby("posicao_id")[col].transform("median")
-                ).fillna(0)
+        df_mercado_sim = impute_model_features(df_mercado_sim, feat_cols)
 
         # Montar time com o modelo
         try:

@@ -53,6 +53,13 @@ rodada)` e conserva `pontos` como alvo da linha. Para prever R, ele:
 4. junta mando, adversário e odds da rodada alvo. Sem odds, usa probabilidades
    neutras de `1/3`.
 
+Forma e disponibilidade são sinais distintos. `media_pts_ultimas_3_aparicoes`,
+`media_pts_ultimas_5_aparicoes` e `std_pts_ultimas_5_aparicoes` consideram
+somente jogos em que o atleta entrou em campo. `aparicoes_5r`, `aparicoes_10r`,
+`regularidade_*`, `rodadas_desde_ultima_aparicao`, `sequencia_aparicoes` e
+`aparicoes_anteriores` medem frequência e confiabilidade no calendário. Todas
+essas features usam apenas rodadas anteriores à linha alvo.
+
 Na escalação real, `mercado_atual` fornece o elenco aberto e os valores atuais;
 o contexto da partida e as odds da rodada alvo são juntados depois. No
 backtest, a linha histórica da rodada alvo é apenas uma **proxy do elenco de
