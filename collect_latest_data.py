@@ -115,8 +115,14 @@ def get_previous_round_players_data(api, current_round: int) -> bool:
         collected_frames.append(archive_players)
 
     api_rounds = missing_rounds(archive_players, rounds_to_fetch)
-    unavailable_rounds = []
-    for i_round in api_rounds:
+    latest_completed_round = current_round - 1
+    unavailable_rounds = [
+        i_round for i_round in api_rounds if i_round != latest_completed_round
+    ]
+    api_fallback_rounds = [
+        i_round for i_round in api_rounds if i_round == latest_completed_round
+    ]
+    for i_round in api_fallback_rounds:
         log.info("Coletando rodada %s pela API do cartola.", i_round)
         round_players = get_round_players_data_from_cartola(
             api,
