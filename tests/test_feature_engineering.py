@@ -167,8 +167,16 @@ class FeatureEngineeringTest(unittest.TestCase):
 
         features = build_features(players, matches, pd.DataFrame())
 
+        round_1 = features.loc[features["rodada"] == 1].iloc[0]
+        self.assertEqual(round_1["ewma_pts_aparicoes"], 0.0)
+        self.assertEqual(round_1["aparicoes_5r"], 0.0)
+        self.assertEqual(round_1["rodadas_desde_ultima_aparicao"], 10.0)
+        self.assertEqual(round_1["sem_historico"], 1.0)
+
         round_4 = features.loc[features["rodada"] == 4].iloc[0]
         self.assertEqual(round_4["media_pts_ultimas_3_aparicoes"], 4.0)
+        self.assertEqual(round_4["pts_ultima_aparicao"], 4.0)
+        self.assertEqual(round_4["mediana_pts_5_aparicoes"], 4.0)
         self.assertEqual(round_4["aparicoes_5r"], 1.0)
         self.assertEqual(round_4["rodadas_desde_ultima_aparicao"], 2.0)
         self.assertEqual(round_4["sequencia_aparicoes"], 0.0)
@@ -176,6 +184,9 @@ class FeatureEngineeringTest(unittest.TestCase):
         target_round = features.loc[features["rodada"] == 6].iloc[0]
         self.assertEqual(target_round["media_pts_ultimas_3_aparicoes"], 6.0)
         self.assertEqual(target_round["media_pts_ultimas_5_aparicoes"], 6.0)
+        self.assertEqual(target_round["media_pts_ultimas_10_aparicoes"], 6.0)
+        self.assertEqual(target_round["pts_ultima_aparicao"], 6.0)
+        self.assertEqual(target_round["mediana_pts_5_aparicoes"], 6.0)
         self.assertEqual(target_round["std_pts_ultimas_5_aparicoes"], 2.0)
         self.assertEqual(target_round["aparicoes_5r"], 3.0)
         self.assertEqual(target_round["aparicoes_10r"], 3.0)
@@ -184,6 +195,55 @@ class FeatureEngineeringTest(unittest.TestCase):
         self.assertEqual(target_round["rodadas_desde_ultima_aparicao"], 1.0)
         self.assertEqual(target_round["sequencia_aparicoes"], 2.0)
         self.assertEqual(target_round["aparicoes_anteriores"], 3.0)
+        self.assertEqual(target_round["sem_historico"], 0.0)
+
+    def test_recent_form_is_responsive_robust_and_excludes_target_outcome(self):
+        points = [5.0, 6.0, 5.0, 25.0, 0.0, 100.0]
+        played = [True, True, True, True, False, True]
+        players = pd.DataFrame(
+            [
+                {
+                    "temporada": 2026,
+                    "rodada": rodada,
+                    "atleta_id": 100,
+                    "clube_id": 1,
+                    "pontos": points[rodada - 1],
+                    "jogou": played[rodada - 1],
+                    "preco": 10.0,
+                    "media": 5.0,
+                }
+                for rodada in range(1, 7)
+            ]
+        )
+        matches = pd.DataFrame(
+            [
+                {
+                    "temporada": 2026,
+                    "rodada": rodada,
+                    "clube_id": 1,
+                    "mando": 1,
+                    "clube_adversario_id": 2,
+                    "gols_feitos_clube": 1,
+                    "gols_sofridos_clube": 0,
+                }
+                for rodada in range(1, 7)
+            ]
+        )
+
+        features = build_features(players, matches, pd.DataFrame())
+        target_round = features.loc[features["rodada"] == 6].iloc[0]
+        expected_ewma = pd.Series(points[:4]).ewm(halflife=3, adjust=True).mean().iloc[-1]
+
+        self.assertEqual(target_round["pts_ultima_aparicao"], 25.0)
+        self.assertEqual(target_round["mediana_pts_5_aparicoes"], 5.5)
+        self.assertEqual(target_round["media_pts_ultimas_10_aparicoes"], 10.25)
+        self.assertAlmostEqual(target_round["ewma_pts_aparicoes"], expected_ewma)
+        self.assertAlmostEqual(
+            target_round["tendencia_pts_aparicoes"],
+            expected_ewma - 10.25,
+        )
+        self.assertLess(target_round["ewma_pts_aparicoes"], 25.0)
+        self.assertEqual(target_round["aparicoes_anteriores"], 4.0)
 
     def test_adds_same_mando_point_averages_from_prior_rounds(self):
         players = pd.DataFrame(

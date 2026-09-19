@@ -15,6 +15,8 @@ import cartola_team_builder as team_builder
 from cartola_model_training import (
     DEFAULT_MODEL_STRATEGY,
     GRADIENT_BOOSTING_STRATEGY,
+    fit_feature_fill_values,
+    model_feature_matrix,
     resolve_model_strategy,
     train_models_by_position,
 )
@@ -23,7 +25,6 @@ from cartola_team_builder import (
     apply_reserve_substitutions,
     build_target_round_market_features,
     build_team,
-    impute_model_features,
     imprimir_time,
     lineup_output_table,
     merge_target_round_match_context,
@@ -39,19 +40,29 @@ class ScoreModel:
 
 
 class ModelFeatureImputationTest(unittest.TestCase):
-    def test_nullable_integer_feature_accepts_fractional_position_median(self):
-        market = pd.DataFrame(
+    def test_uses_training_median_and_semantic_form_defaults(self):
+        training = pd.DataFrame(
             {
-                "posicao_id": [4, 4, 4, 5],
-                "aparicoes_5r": pd.Series([1, 2, pd.NA, pd.NA], dtype="Int64"),
+                "media_lag": pd.Series([1, 2, pd.NA], dtype="Int64"),
+                "aparicoes_5r": pd.Series([1, 2, pd.NA], dtype="Int64"),
+                "rodadas_desde_ultima_aparicao": pd.Series(
+                    [1, 2, pd.NA], dtype="Int64"
+                ),
             }
         )
+        feature_cols = [
+            "media_lag",
+            "aparicoes_5r",
+            "rodadas_desde_ultima_aparicao",
+        ]
 
-        result = impute_model_features(market, ["aparicoes_5r"])
+        fill_values = fit_feature_fill_values(training, feature_cols)
+        result = model_feature_matrix(training, feature_cols, fill_values)
 
-        self.assertEqual(result["aparicoes_5r"].dtype, "float64")
-        self.assertEqual(result.loc[2, "aparicoes_5r"], 1.5)
-        self.assertEqual(result.loc[3, "aparicoes_5r"], 0.0)
+        self.assertEqual(result["media_lag"].dtype, "float64")
+        self.assertEqual(result.loc[2, "media_lag"], 1.5)
+        self.assertEqual(result.loc[2, "aparicoes_5r"], 0.0)
+        self.assertEqual(result.loc[2, "rodadas_desde_ultima_aparicao"], 10.0)
 
 
 def training_frame():
