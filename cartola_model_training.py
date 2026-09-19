@@ -7,7 +7,13 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_absolute_error
 
 from cartola_data.config import GRADIENT_BOOSTING_TUNING, TUNING
-from feature_engineering import FEATURE_COLS, GOL_FEATURE_COLS, TEC_FEATURE_COLS
+from feature_engineering import (
+    FEATURE_COLS,
+    FORM_FEATURE_DEFAULTS,
+    FORM_ZERO_DEFAULT_FEATURE_COLS,
+    GOL_FEATURE_COLS,
+    TEC_FEATURE_COLS,
+)
 
 log = logging.getLogger(__name__)
 
@@ -140,8 +146,44 @@ def resolve_model_strategy(
     return MODEL_TRAINING_STRATEGIES[strategy_key]
 
 
-def model_feature_matrix(df: pd.DataFrame, feature_cols: list[str]) -> pd.DataFrame:
-    return df.reindex(columns=feature_cols).apply(pd.to_numeric, errors="coerce").fillna(0)
+def fit_feature_fill_values(
+    training_df: pd.DataFrame,
+    feature_cols: list[str],
+) -> dict[str, float]:
+    """Learn feature defaults from training data only."""
+    fill_values = {}
+    for col in feature_cols:
+        if col in FORM_FEATURE_DEFAULTS:
+            fill_values[col] = float(FORM_FEATURE_DEFAULTS[col])
+        elif col in FORM_ZERO_DEFAULT_FEATURE_COLS:
+            fill_values[col] = 0.0
+        else:
+            values = pd.to_numeric(training_df[col], errors="coerce").astype(float)
+            median = values.median()
+            fill_values[col] = float(median) if pd.notna(median) else 0.0
+    return fill_values
+
+
+def model_feature_matrix(
+    df: pd.DataFrame,
+    feature_cols: list[str],
+    fill_values: dict[str, float] | None = None,
+) -> pd.DataFrame:
+    """Build a numeric matrix using training-fitted or semantic defaults."""
+    matrix = df.reindex(columns=feature_cols).apply(
+        lambda values: pd.to_numeric(values, errors="coerce").astype(float)
+    )
+    defaults = {
+        col: (
+            FORM_FEATURE_DEFAULTS.get(col, 0.0)
+            if col in FORM_ZERO_DEFAULT_FEATURE_COLS
+            else 0.0
+        )
+        for col in feature_cols
+    }
+    if fill_values:
+        defaults.update(fill_values)
+    return matrix.fillna(defaults).fillna(0.0)
 
 
 def train_model(
@@ -189,8 +231,10 @@ def train_model(
     if training_df.empty or test_df.empty:
         raise ValueError("Dados insuficientes para treino/validacao.")
 
-    X_train, y_train = model_feature_matrix(training_df, feat_cols), training_df["pontos"]
-    X_val, y_val = model_feature_matrix(test_df, feat_cols), test_df["pontos"]
+    fill_values = fit_feature_fill_values(training_df, feat_cols)
+    X_train = model_feature_matrix(training_df, feat_cols, fill_values)
+    X_val = model_feature_matrix(test_df, feat_cols, fill_values)
+    y_train, y_val = training_df["pontos"], test_df["pontos"]
 
     training_strategy = resolve_model_strategy(strategy)
     model = training_strategy.build_model(tuning)
@@ -198,7 +242,7 @@ def train_model(
 
     mae = mean_absolute_error(y_val, model.predict(X_val))
     log.info(f"Validacao MAE: {mae:.3f} pts | Features: {len(feat_cols)}")
-    return model, feat_cols, mae
+    return model, feat_cols, mae, fill_values
 
 
 def train_models_by_position(
@@ -218,7 +262,7 @@ def train_models_by_position(
         elif posicao_id == 6:
             feature_cols = TEC_FEATURE_COLS
 
-        model, feat_cols, mae = train_model(
+        model, feat_cols, mae, fill_values = train_model(
             df_pos,
             round_limit,
             feature_cols,
@@ -230,6 +274,7 @@ def train_models_by_position(
             "model": model,
             "feature_cols": feat_cols,
             "mae": mae,
+            "feature_fill_values": fill_values,
             "strategy": training_strategy.name,
         }
 
