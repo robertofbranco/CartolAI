@@ -13,9 +13,14 @@ FEATURE_SCOUTS = [
 
 PLAYER_FORM_AND_AVAILABILITY_FEATURE_COLS = [
     # Performance in actual appearances, excluding the target round.
+    "pts_ultima_aparicao",
+    "ewma_pts_aparicoes",
+    "mediana_pts_5_aparicoes",
     "media_pts_ultimas_3_aparicoes",
     "media_pts_ultimas_5_aparicoes",
+    "media_pts_ultimas_10_aparicoes",
     "std_pts_ultimas_5_aparicoes",
+    "tendencia_pts_aparicoes",
     # Availability in calendar rounds, excluding the target round.
     "aparicoes_5r",
     "aparicoes_10r",
@@ -24,7 +29,15 @@ PLAYER_FORM_AND_AVAILABILITY_FEATURE_COLS = [
     "rodadas_desde_ultima_aparicao",
     "sequencia_aparicoes",
     "aparicoes_anteriores",
+    "sem_historico",
 ]
+
+FORM_ZERO_DEFAULT_FEATURE_COLS = frozenset(
+    PLAYER_FORM_AND_AVAILABILITY_FEATURE_COLS
+)
+FORM_FEATURE_DEFAULTS = {
+    "rodadas_desde_ultima_aparicao": 10.0,
+}
 
 GOL_FEATURE_COLS = [
     "clube_enc", "clube_adv_enc",
@@ -175,17 +188,33 @@ def _add_player_form_and_availability_features(
 
     def shifted_appearance_state(values: pd.Series) -> pd.Series:
         state = pd.Series(float("nan"), index=features_df.index)
-        state.loc[completed_appearance] = values
+        numeric_values = pd.to_numeric(values, errors="coerce").astype(float)
+        state.loc[completed_appearance] = numeric_values
         state = state.groupby(group_keys, sort=False).ffill()
         return state.groupby(group_keys, sort=False).shift(1)
 
-    for window in (3, 5):
+    for window in (3, 5, 10):
         appearance_mean = appearance_rows.groupby(temporal_group_cols)["pontos"].transform(
             lambda x: x.rolling(window, min_periods=1).mean()
         )
         features_df[f"media_pts_ultimas_{window}_aparicoes"] = (
             shifted_appearance_state(appearance_mean)
         )
+
+    appearance_median = appearance_rows.groupby(temporal_group_cols)["pontos"].transform(
+        lambda x: x.rolling(5, min_periods=1).median()
+    )
+    features_df["mediana_pts_5_aparicoes"] = shifted_appearance_state(
+        appearance_median
+    )
+
+    appearance_ewma = appearance_rows.groupby(temporal_group_cols)["pontos"].transform(
+        lambda x: x.ewm(halflife=3, adjust=True).mean()
+    )
+    features_df["ewma_pts_aparicoes"] = shifted_appearance_state(appearance_ewma)
+    features_df["pts_ultima_aparicao"] = shifted_appearance_state(
+        appearance_rows["pontos"]
+    )
 
     appearance_std = appearance_rows.groupby(temporal_group_cols)["pontos"].transform(
         lambda x: x.rolling(5, min_periods=1).std().fillna(0)
@@ -210,6 +239,9 @@ def _add_player_form_and_availability_features(
     features_df["aparicoes_anteriores"] = played_numeric.groupby(
         group_keys, sort=False
     ).transform(lambda x: x.shift(1).fillna(0).cumsum())
+    features_df["sem_historico"] = (
+        features_df["aparicoes_anteriores"] == 0
+    ).astype(float)
 
     played_round = features_df["rodada"].where(played)
     previous_played_round = played_round.groupby(group_keys, sort=False).transform(
@@ -217,7 +249,7 @@ def _add_player_form_and_availability_features(
     )
     features_df["rodadas_desde_ultima_aparicao"] = (
         features_df["rodada"] - previous_played_round
-    )
+    ).clip(upper=10).fillna(FORM_FEATURE_DEFAULTS["rodadas_desde_ultima_aparicao"])
 
     def previous_appearance_streak(values: pd.Series) -> pd.Series:
         prior_played = values.shift(1).fillna(0).astype(bool)
@@ -227,6 +259,21 @@ def _add_player_form_and_availability_features(
     features_df["sequencia_aparicoes"] = played_numeric.groupby(
         group_keys, sort=False
     ).transform(previous_appearance_streak)
+
+    features_df["tendencia_pts_aparicoes"] = (
+        features_df["ewma_pts_aparicoes"]
+        - features_df["media_pts_ultimas_10_aparicoes"]
+    )
+
+    zero_default_cols = FORM_ZERO_DEFAULT_FEATURE_COLS.difference(
+        FORM_FEATURE_DEFAULTS
+    )
+    available_zero_default_cols = [
+        col for col in zero_default_cols if col in features_df.columns
+    ]
+    features_df[available_zero_default_cols] = features_df[
+        available_zero_default_cols
+    ].fillna(0.0)
 
     return features_df
 
