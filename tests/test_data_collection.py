@@ -80,8 +80,8 @@ class MergePartitionedParquetsTest(unittest.TestCase):
 
 
 class CollectAllDataFlowTest(unittest.TestCase):
-    def test_get_players_data_fetches_only_latest_archive_missing_round_from_api(self):
-        archive_players = pd.DataFrame(
+    def test_get_players_data_fetches_latest_missing_archive_round_from_api(self):
+        existing_players = pd.DataFrame(
             [
                 {"temporada": 2026, "rodada": 1, "atleta_id": 101, "clube_id": 263},
                 {"temporada": 2026, "rodada": 2, "atleta_id": 102, "clube_id": 263},
@@ -92,12 +92,19 @@ class CollectAllDataFlowTest(unittest.TestCase):
                 {"temporada": 2026, "rodada": 4, "atleta_id": 104, "clube_id": 263},
             ]
         )
+        archive_players = pd.DataFrame(
+            [
+                {"temporada": 2026, "rodada": 3, "atleta_id": 103, "clube_id": 263},
+            ]
+        )
 
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)
+            existing_players.to_parquet(data_dir / "jogadores_por_rodada_2026.parquet", index=False)
             api = MagicMock()
             with (
                 patch.object(collect_latest_data, "DATA_DIR", data_dir),
+                patch.object(collect_latest_data, "CURRENT_SEASON", 2026),
                 patch.object(
                     collect_latest_data,
                     "get_players_data_from_caRtola",
@@ -109,13 +116,13 @@ class CollectAllDataFlowTest(unittest.TestCase):
                     return_value=api_players,
                 ) as get_api_players,
             ):
-                collect_latest_data.get_previous_round_players_data(api, current_round=5, season=2026)
+                collect_latest_data.get_previous_round_players_data(api, current_round=5)
 
-            get_archive_players.assert_called_once_with(2026, [1, 2, 3, 4])
+            get_archive_players.assert_called_once_with(2026, [3, 4])
             get_api_players.assert_called_once_with(api, 4, temporada=2026)
 
             saved_players = pd.read_parquet(data_dir / "jogadores_por_rodada_2026.parquet")
-            self.assertEqual(saved_players["rodada"].tolist(), [1, 2, 4])
+            self.assertEqual(saved_players["rodada"].tolist(), [1, 2, 3, 4])
 
     def test_get_players_data_raises_when_no_player_data_is_collected(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -123,6 +130,7 @@ class CollectAllDataFlowTest(unittest.TestCase):
             api = MagicMock()
             with (
                 patch.object(collect_latest_data, "DATA_DIR", data_dir),
+                patch.object(collect_latest_data, "CURRENT_SEASON", 2026),
                 patch.object(
                     collect_latest_data,
                     "get_players_data_from_caRtola",
@@ -134,10 +142,52 @@ class CollectAllDataFlowTest(unittest.TestCase):
                     return_value=pd.DataFrame(),
                 ),
             ):
-                with self.assertRaisesRegex(RuntimeError, "Nenhum dado de jogadores coletado"):
-                    collect_latest_data.get_previous_round_players_data(api, current_round=5, season=2026)
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "Dados de jogadores para rodadas 1, 2, 3, 4 ainda não estão disponíveis",
+                ):
+                    collect_latest_data.get_previous_round_players_data(api, current_round=5)
 
             self.assertFalse((data_dir / "jogadores_por_rodada_2026.parquet").exists())
+
+    def test_get_players_data_requires_archive_for_older_missing_rounds(self):
+        existing_players = pd.DataFrame(
+            [{"temporada": 2026, "rodada": 1, "atleta_id": 101, "clube_id": 263}]
+        )
+        archive_players = pd.DataFrame(
+            [{"temporada": 2026, "rodada": 4, "atleta_id": 104, "clube_id": 263}]
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            existing_players.to_parquet(
+                data_dir / "jogadores_por_rodada_2026.parquet",
+                index=False,
+            )
+            api = MagicMock()
+            with (
+                patch.object(collect_latest_data, "DATA_DIR", data_dir),
+                patch.object(collect_latest_data, "CURRENT_SEASON", 2026),
+                patch.object(
+                    collect_latest_data,
+                    "get_players_data_from_caRtola",
+                    return_value=archive_players,
+                ),
+                patch.object(
+                    collect_latest_data,
+                    "get_round_players_data_from_cartola",
+                ) as get_api_players,
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "Dados de jogadores para rodadas 2, 3",
+                ):
+                    collect_latest_data.get_previous_round_players_data(
+                        api,
+                        current_round=5,
+                    )
+
+            get_api_players.assert_not_called()
 
     def test_latest_round_players_data_uses_current_market_snapshot(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -185,43 +235,39 @@ class CollectAllDataFlowTest(unittest.TestCase):
             self.assertEqual(row["jogos"], 3)
 
     def test_run_collectors_wires_historic_current_and_current_players(self):
-        args = Namespace(
-            current_season=2026,
-            historic_years=[2024, 2025],
-            skip_current=False,
-            skip_gato=True,
-            skip_historic=False,
-            skip_players=False,
-        )
+        args = Namespace(mercado_only=False)
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)
             api = MagicMock()
             with (
                 patch.object(collect_latest_data, "DATA_DIR", data_dir),
+                patch.object(collect_latest_data, "CURRENT_SEASON", 2026),
                 patch.object(collect_latest_data.os.environ, "get", return_value="token-123"),
-                patch.object(collect_latest_data, "import_historic_season") as import_historic,
                 patch.object(collect_latest_data, "CartolaAPI", return_value=api) as cartola_api,
                 patch.object(collect_latest_data, "get_current_round", return_value=5) as get_round,
-                patch.object(collect_latest_data, "collect_current_season") as collect_current,
-                patch.object(collect_latest_data, "get_players_data") as get_players,
+                patch.object(collect_latest_data, "update_market") as update_market,
+                patch.object(collect_latest_data, "update_odds") as update_odds,
+                patch.object(collect_latest_data, "collect_latest_api_data") as collect_current,
+                patch.object(collect_latest_data, "get_previous_round_players_data") as get_players,
             ):
                 collect_latest_data.run_collectors(args)
 
-            import_historic.assert_not_called()
             cartola_api.assert_called_once_with(token="token-123")
             get_round.assert_called_once_with(api)
+            update_market.assert_called_once_with(api)
+            update_odds.assert_called_once_with(api, 5, 2026, "token-123")
             collect_current.assert_called_once_with(
                 api=api,
                 current_round=5,
-                temporada=2026,
-                token="token-123",
+                season=2026,
             )
-            get_players.assert_called_once_with(api, 5, 2026)
+            get_players.assert_called_once_with(api, 5)
 
     def test_main_merge_only_skips_collectors(self):
         args = Namespace(
             merge_only=True,
             skip_merge=False,
+            mercado_only=False,
             merge_datasets=["odds"],
         )
 
@@ -244,12 +290,88 @@ class CollectAllDataFlowTest(unittest.TestCase):
 
 
 class CurrentSeasonCollectionTest(unittest.TestCase):
-    def test_collect_current_season_saves_odds_when_token_is_available(self):
+    def test_collect_latest_api_data_fetches_each_missing_completed_round(self):
+        api = MagicMock()
+        matches_dataset = MagicMock()
+        matches_dataset.read_or_empty.return_value = pd.DataFrame(
+            [{"rodada": 1}]
+        )
+        users_mean_dataset = MagicMock()
+        users_mean_dataset.read_or_empty.return_value = pd.DataFrame(
+            [{"rodada": 2}]
+        )
+
+        with (
+            patch.object(current, "MatchesDataset", return_value=matches_dataset) as matches_class,
+            patch.object(
+                current,
+                "CartolaUsersMeanDataset",
+                return_value=users_mean_dataset,
+            ) as users_mean_class,
+            patch.object(
+                current,
+                "preparar_partidas",
+                return_value=pd.DataFrame(),
+            ) as preparar_partidas,
+            patch.object(
+                current,
+                "get_cartola_users_mean",
+                return_value=pd.DataFrame(),
+            ) as get_users_mean,
+            patch.object(current, "get_league_brackets", return_value=pd.DataFrame()),
+        ):
+            current.collect_latest_api_data(api, current_round=4, season=2026)
+
+        matches_class.assert_called_once_with(season=2026)
+        users_mean_class.assert_called_once_with(season=2026)
+        self.assertEqual(
+            preparar_partidas.call_args_list,
+            [
+                call(api, [2], temporada=2026),
+                call(api, [3], temporada=2026),
+            ],
+        )
+        self.assertEqual(
+            get_users_mean.call_args_list,
+            [call(api, [1]), call(api, [3])],
+        )
+        matches_dataset.append.assert_not_called()
+        users_mean_dataset.append.assert_not_called()
+
+    def test_collect_latest_api_data_rejects_non_positive_round(self):
+        with patch.object(current, "MatchesDataset") as matches_class:
+            current.collect_latest_api_data(MagicMock(), current_round=0, season=2026)
+
+        matches_class.assert_not_called()
+
+    def test_get_league_brackets_keeps_scores_for_both_participants(self):
+        api = MagicMock()
+        api.league.return_value = {
+            "chaves_mata_mata": {
+                "6": [
+                    {
+                        "vencedor_id": 20,
+                        "time_mandante_id": 10,
+                        "time_visitante_id": 20,
+                        "time_mandante_pontuacao": 55.0,
+                        "time_visitante_pontuacao": 80.0,
+                    }
+                ]
+            }
+        }
+
+        result = current.get_league_brackets(api, ["liga-a"])
+
+        self.assertEqual(result.loc[0, "time_mandante_pontuacao"], 55.0)
+        self.assertEqual(result.loc[0, "time_visitante_pontuacao"], 80.0)
+        self.assertEqual(result.loc[0, "pontos"], 80.0)
+
+    def test_update_odds_saves_current_round_when_token_is_available(self):
         odds = pd.DataFrame(
             [
                 {
                     "temporada": 2026,
-                    "rodada": 2,
+                    "rodada": 3,
                     "clube_id": 263,
                     "prob_win": 0.5,
                     "prob_draw": 0.3,
@@ -263,31 +385,70 @@ class CurrentSeasonCollectionTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)
             with (
-                patch.object(current, "DATA_DIR", data_dir),
+                patch.object(
+                    current,
+                    "OddsDataset",
+                    side_effect=lambda season: OddsDataset(season=season, data_dir=data_dir),
+                ),
                 patch.object(current, "GatoMestreAPI") as gato_api,
-                patch.object(current, "preparar_partidas", return_value=pd.DataFrame()),
-                patch.object(current, "get_current_market", return_value=pd.DataFrame()),
                 patch.object(current, "get_odds", return_value=odds) as get_odds,
-                patch.object(current, "get_cartola_users_mean", return_value=pd.DataFrame()),
-                patch.object(current, "get_league_brackets", return_value=pd.DataFrame()),
             ):
-                result = current.collect_latest_api_data(
-                    api=api,
-                    current_round=3,
-                    season=2026,
-                    token="token-123",
-                )
+                current.update_odds(api=api, current_round=3, season=2026, token="token-123")
 
             gato_api.assert_called_once_with(token="token-123", temporada=2026)
             get_odds.assert_called_once_with(
                 gato_api.return_value,
                 {"263": {"abreviacao": "BOT"}},
-                [1, 2, 3],
+                [2, 3],
                 temporada=2026,
             )
-            self.assertEqual(result.files["odds"], data_dir / "odds_2026.parquet")
             saved_odds = pd.read_parquet(data_dir / "odds_2026.parquet")
             pd.testing.assert_frame_equal(saved_odds, odds)
+
+    def test_update_odds_fills_missing_rounds_and_preserves_existing_ones(self):
+        existing_odds = pd.DataFrame(
+            [
+                {"temporada": 2026, "rodada": rodada, "clube_id": 263, "prob_win": 0.5}
+                for rodada in [2, 4]
+            ]
+        )
+        collected_odds = pd.DataFrame(
+            [
+                {"temporada": 2026, "rodada": rodada, "clube_id": 263, "prob_win": 0.6}
+                for rodada in [3, 5]
+            ]
+        )
+        api = MagicMock()
+        api.clubes.return_value = {"263": {"abreviacao": "BOT"}}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            existing_odds.to_parquet(data_dir / "odds_2026.parquet", index=False)
+            with (
+                patch.object(
+                    current,
+                    "OddsDataset",
+                    side_effect=lambda season: OddsDataset(season=season, data_dir=data_dir),
+                ),
+                patch.object(current, "GatoMestreAPI") as gato_api,
+                patch.object(
+                    current,
+                    "get_odds",
+                    return_value=collected_odds,
+                ) as get_odds,
+            ):
+                current.update_odds(api=api, current_round=5, season=2026, token="token-123")
+
+            get_odds.assert_called_once_with(
+                gato_api.return_value,
+                {"263": {"abreviacao": "BOT"}},
+                [3, 5],
+                temporada=2026,
+            )
+            saved_odds = pd.read_parquet(data_dir / "odds_2026.parquet")
+
+        self.assertEqual(saved_odds["rodada"].tolist(), [2, 3, 4, 5])
+        self.assertEqual(saved_odds["prob_win"].tolist(), [0.5, 0.6, 0.5, 0.6])
 
     def test_build_abbr_to_clube_id_prefers_current_season_ids(self):
         clubes = {

@@ -2,8 +2,7 @@
 
 from .api import CartolaAPI, CbfAPI, GatoMestreAPI
 from .config import (
-    BASE_URL,
-    BUDGET,
+    BASE_URL,    
     CAPTAIN_BONUS,
     CBF_API,
     CURRENT_SEASON,

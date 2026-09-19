@@ -3,14 +3,17 @@ import os
 import argparse
 import pandas as pd
 from dotenv import load_dotenv
-import lightgbm as lgb
-
-from lightgbm import LGBMRegressor
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.metrics import mean_absolute_error
 
 from cartola_data.current import get_current_round
 from feature_engineering import FEATURE_COLS, build_features
+from cartola_model_training import (
+    DEFAULT_MODEL_STRATEGY,
+    available_model_strategies,
+    feature_cols_from_models,
+    mean_mae_from_models,
+    model_feature_matrix,
+    train_models_by_position,
+)
 
 from cartola_data.config import (
     CAPTAIN_BONUS,
@@ -18,9 +21,7 @@ from cartola_data.config import (
     CURRENT_SEASON,
     DATA_DIR,
     FORMATION,
-    GRADIENT_BOOSTING_TUNING,
     POSICAO_NOME,
-    RISK_TUNING,
     STATUS,
     ODDS_FILTER,
     TUNING,
@@ -38,6 +39,12 @@ ODDS_COLS = ["prob_win", "prob_draw", "prob_loss"]
 POS_THRESHOLD = [1, 2, 3, 4, 5, 6]
 TEC_POSITION_ID = 6
 LUXURY_RESERVE_POSITIONS = (4, 5)
+ATTACK_CANDIDATE_LIMIT = 5
+DEFAULT_ATTACK_SELECTION_POLICY = {
+    4: {"risk": 0, "stable": 1, "default": 2},
+    5: {"risk": 1, "stable": 0, "default": 2},
+}
+CAPTAIN_POSITION_SELECTION_POLICY = {"risk": 1, "stable": 1, "default": 2}
 CAPTAIN_COL = "capitao"
 LINEUP_OUTPUT_COLUMNS = [
     "rodada",
@@ -52,238 +59,6 @@ LINEUP_OUTPUT_COLUMNS = [
     "reserva_de_luxo",
     "capitao",
 ]
-
-DEFAULT_MODEL_STRATEGY = "random_forest"
-GRADIENT_BOOSTING_STRATEGY = "gradient_boosting"
-
-
-class ModelTrainingStrategy:
-    """Builds a regression model for Cartola point prediction."""
-
-    name: str
-    default_tuning: dict
-
-    def merged_tuning(self, tuning: dict | None = None) -> dict:
-        return {**self.default_tuning, **(tuning or {})}
-
-    def build_model(self, tuning: dict | None = None):
-        raise NotImplementedError
-
-    def fit_model(
-        self,
-        model,
-        X_train: pd.DataFrame,
-        y_train: pd.Series,
-        X_val: pd.DataFrame,
-        y_val: pd.Series,
-        tuning: dict | None = None,
-    ):
-        model.fit(X_train, y_train)
-        return model
-
-
-class RandomForestTrainingStrategy(ModelTrainingStrategy):
-    name = DEFAULT_MODEL_STRATEGY
-    default_tuning = TUNING
-
-    def build_model(self, tuning: dict | None = None) -> RandomForestRegressor:
-        params = self.merged_tuning(tuning)
-        return RandomForestRegressor(
-            n_estimators=params["n_estimators"],
-            max_depth=params["max_depth"],
-            min_samples_leaf=params["min_samples_leaf"],
-            random_state=params["random_state"],
-            min_samples_split=params["min_samples_split"],
-            max_features=params["max_features"],
-            n_jobs=params["n_jobs"],
-        )
-
-
-class GradientBoostingTrainingStrategy(ModelTrainingStrategy):
-    name = GRADIENT_BOOSTING_STRATEGY
-    default_tuning = GRADIENT_BOOSTING_TUNING
-
-    def build_model(self, tuning: dict | None = None) -> LGBMRegressor:
-        params = self.merged_tuning(tuning)
-        return LGBMRegressor(
-            n_estimators=params["n_estimators"],
-            learning_rate=params["learning_rate"],
-            max_depth=params["max_depth"],
-            num_leaves=params["num_leaves"],
-            min_child_samples=params["min_child_samples"],
-            random_state=params["random_state"],
-            subsample=params["subsample"],
-            colsample_bytree=params["colsample_bytree"],
-            reg_alpha=params["reg_alpha"],
-            reg_lambda=params["reg_lambda"],
-            objective=params["objective"],
-            metric=params["metric"],
-            n_jobs=params["n_jobs"],
-            verbosity=params["verbosity"],
-        )
-
-    def fit_model(
-        self,
-        model: LGBMRegressor,
-        X_train: pd.DataFrame,
-        y_train: pd.Series,
-        X_val: pd.DataFrame,
-        y_val: pd.Series,
-        tuning: dict | None = None,
-    ) -> LGBMRegressor:
-        params = self.merged_tuning(tuning)
-        callbacks = [
-            lgb.early_stopping(
-                stopping_rounds=params["early_stopping_rounds"],
-                verbose=False,
-            ),
-            lgb.log_evaluation(period=0),
-        ]
-        model.fit(
-            X_train,
-            y_train,
-            eval_set=[(X_val, y_val)],
-            eval_metric=params["metric"],
-            callbacks=callbacks,
-        )
-        return model
-
-
-MODEL_TRAINING_STRATEGIES = {
-    DEFAULT_MODEL_STRATEGY: RandomForestTrainingStrategy(),
-    GRADIENT_BOOSTING_STRATEGY: GradientBoostingTrainingStrategy(),
-}
-
-MODEL_STRATEGY_ALIASES = {
-    "rf": DEFAULT_MODEL_STRATEGY,
-    "random-forest": DEFAULT_MODEL_STRATEGY,
-    "random_forest": DEFAULT_MODEL_STRATEGY,
-    "gb": GRADIENT_BOOSTING_STRATEGY,
-    "gradient-boosting": GRADIENT_BOOSTING_STRATEGY,
-    "gradient_boosting": GRADIENT_BOOSTING_STRATEGY,
-}
-
-
-def available_model_strategies() -> list[str]:
-    return list(MODEL_TRAINING_STRATEGIES)
-
-
-def resolve_model_strategy(
-    strategy: str | ModelTrainingStrategy = DEFAULT_MODEL_STRATEGY,
-) -> ModelTrainingStrategy:
-    if isinstance(strategy, ModelTrainingStrategy):
-        return strategy
-
-    requested = str(strategy).lower()
-    strategy_key = MODEL_STRATEGY_ALIASES.get(requested, requested)
-    if strategy_key not in MODEL_TRAINING_STRATEGIES:
-        available = ", ".join(available_model_strategies())
-        raise ValueError(f"Estrategia de modelo desconhecida: {strategy}. Opcoes: {available}")
-    return MODEL_TRAINING_STRATEGIES[strategy_key]
-
-
-def model_feature_matrix(df: pd.DataFrame, feature_cols: list[str]) -> pd.DataFrame:
-    return df.reindex(columns=feature_cols).apply(pd.to_numeric, errors="coerce").fillna(0)
-
-
-def train_model(
-    df: pd.DataFrame,
-    round_limit: int,
-    season: int | None = None,
-    tuning: dict | None = None,
-    strategy: str | ModelTrainingStrategy = DEFAULT_MODEL_STRATEGY,
-):
-    """
-    Train a regression model with time validation.
-    Returns (model, feature_cols, mae).
-
-    When `season` is provided and the dataset has a `temporada` column, all
-    previous seasons are used for training. The validation fold is the 3
-    rounds immediately before `round_limit` in the target season.
-    """
-    feat_cols = [c for c in FEATURE_COLS if c in df.columns]
-    df_model = df[df["pontos"].notna()].copy()
-
-    validation_start = round_limit - 3
-    if season is not None and "temporada" in df_model.columns:
-        training_mask = (
-            (df_model["temporada"] < season)
-            | (
-                (df_model["temporada"] == season)
-                & (df_model["rodada"] < validation_start)
-            )
-        )
-        validation_mask = (
-            (df_model["temporada"] == season)
-            & (df_model["rodada"] >= validation_start)
-            & (df_model["rodada"] < round_limit)
-        )
-        training_df = df_model[training_mask]
-        test_df = df_model[validation_mask]
-    else:
-        training_df = df_model[df_model["rodada"] < validation_start]
-        test_df = df_model[
-            (df_model["rodada"] >= validation_start)
-            & (df_model["rodada"] < round_limit)
-        ]
-
-    if training_df.empty or test_df.empty:
-        raise ValueError("Dados insuficientes para treino/validação.")
-
-    X_train, y_train = model_feature_matrix(training_df, feat_cols), training_df["pontos"]
-    X_val,   y_val   = model_feature_matrix(test_df, feat_cols),     test_df["pontos"]
-
-    training_strategy = resolve_model_strategy(strategy)
-    model = training_strategy.build_model(tuning)
-    model = training_strategy.fit_model(model, X_train, y_train, X_val, y_val, tuning)
-
-    mae = mean_absolute_error(y_val, model.predict(X_val))
-    log.info(f"Validação MAE: {mae:.3f} pts | Features: {len(feat_cols)}")
-    return model, feat_cols, mae
-
-
-def train_models_by_position(
-    df: pd.DataFrame,
-    round_limit: int,
-    season: int | None = None,
-    tuning: dict | None = None,
-    strategy: str | ModelTrainingStrategy = DEFAULT_MODEL_STRATEGY,
-):
-    models = {}
-    training_strategy = resolve_model_strategy(strategy)
-
-    for posicao_id, df_pos in df.groupby("posicao_id"):
-        model, feat_cols, mae = train_model(
-            df_pos,
-            round_limit,
-            season,
-            tuning,
-            training_strategy,
-        )
-        models[int(posicao_id)] = {
-            "model": model,
-            "feature_cols": feat_cols,
-            "mae": mae,
-            "strategy": training_strategy.name,
-        }
-
-    return models
-
-
-def feature_cols_from_models(models_by_position: dict) -> list[str]:
-    feature_cols = []
-    for model_info in models_by_position.values():
-        for col in model_info["feature_cols"]:
-            if col not in feature_cols:
-                feature_cols.append(col)
-    return feature_cols
-
-
-def mean_mae_from_models(models_by_position: dict) -> float:
-    maes = [model_info["mae"] for model_info in models_by_position.values()]
-    if not maes:
-        raise ValueError("Nenhum modelo por posição foi treinado.")
-    return float(sum(maes) / len(maes))
 
 
 def merge_target_round_odds(
@@ -323,6 +98,118 @@ def merge_target_round_odds(
     )
 
     return market_df
+
+
+def build_target_round_market_features(
+    df_players_per_round: pd.DataFrame,
+    df_matches: pd.DataFrame | None,
+    df_odds: pd.DataFrame | None,
+    df_market: pd.DataFrame,
+    season: int,
+    rodada_alvo: int,
+) -> pd.DataFrame:
+    """Build a target-round row using only information available at lock time."""
+    if df_matches is None:
+        df_matches = pd.DataFrame(
+            columns=[
+                "temporada",
+                "rodada",
+                "clube_id",
+                "mando",
+                "clube_adversario_id",
+                "gols_feitos_clube",
+                "gols_sofridos_clube",
+            ]
+        )
+    if df_odds is None:
+        df_odds = pd.DataFrame(
+            columns=["temporada", "rodada", "clube_id", *ODDS_COLS]
+        )
+
+    history_players = df_players_per_round.loc[
+        (df_players_per_round["temporada"] < season)
+        | (
+            (df_players_per_round["temporada"] == season)
+            & (df_players_per_round["rodada"] < rodada_alvo)
+        )
+    ].copy()
+
+    target_market = df_market.copy()
+    target_market["temporada"] = season
+    target_market["rodada"] = rodada_alvo
+
+    result_cols = ["pontos", "jogou", "entrou_em_campo"] + [
+        col for col in target_market.columns if col.startswith("scout_")
+    ]
+    for col in result_cols:
+        if col in target_market.columns:
+            target_market[col] = pd.NA
+
+    players_context = pd.concat(
+        [history_players, target_market],
+        ignore_index=True,
+        sort=False,
+    )
+
+    matches_context = df_matches.loc[
+        (df_matches["temporada"] < season)
+        | (
+            (df_matches["temporada"] == season)
+            & (df_matches["rodada"] <= rodada_alvo)
+        )
+    ].copy()
+    target_match_mask = (
+        (matches_context["temporada"] == season)
+        & (matches_context["rodada"] == rodada_alvo)
+    )
+    for col in ["gols_feitos_clube", "gols_sofridos_clube"]:
+        if col in matches_context.columns:
+            matches_context.loc[target_match_mask, col] = pd.NA
+
+    odds_context = df_odds.loc[
+        (df_odds["temporada"] < season)
+        | (
+            (df_odds["temporada"] == season)
+            & (df_odds["rodada"] <= rodada_alvo)
+        )
+    ].copy()
+
+    market_features = build_features(players_context, matches_context, odds_context)
+    market_features = market_features.loc[
+        (market_features["temporada"] == season)
+        & (market_features["rodada"] == rodada_alvo)
+    ].copy()
+
+    market_features = merge_target_round_odds(
+        market_features,
+        df_odds,
+        season,
+        rodada_alvo,
+    )
+
+    if set(ODDS_COLS).issubset(market_features.columns):
+        missing_odds = market_features[ODDS_COLS].isna().any(axis=1)
+        if missing_odds.any():
+            missing_clubs = sorted(
+                market_features.loc[missing_odds, "clube_id"]
+                .dropna()
+                .astype(int)
+                .unique()
+                .tolist()
+            )
+            log.warning(
+                "Rodada %s: odds ausentes para %s atletas em clubes %s; "
+                "usando fallback neutro.",
+                rodada_alvo,
+                int(missing_odds.sum()),
+                missing_clubs,
+            )
+            market_features.loc[missing_odds, ODDS_COLS] = market_features.loc[
+                missing_odds,
+                ODDS_COLS,
+            ].fillna(1 / 3)
+
+    return market_features
 
 
 def merge_target_round_match_context(
@@ -369,6 +256,53 @@ def merge_target_round_match_context(
             .map(clubes_lookup)
             .fillna("")
         )
+
+    return market_df
+
+
+def refresh_opponent_encoding_from_features(
+    market_df: pd.DataFrame,
+    features_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """Update target-round opponent encoding using the training feature mapping."""
+    required_cols = {"clube_adversario_id", "clube_adv_enc"}
+    if (
+        "clube_adversario_id" not in market_df.columns
+        or not required_cols.issubset(features_df.columns)
+    ):
+        return market_df
+
+    encoded_opponents = (
+        features_df[["clube_adversario_id", "clube_adv_enc"]]
+        .dropna(subset=["clube_adversario_id", "clube_adv_enc"])
+        .copy()
+    )
+    if encoded_opponents.empty:
+        return market_df
+
+    encoded_opponents["encoding_key"] = pd.to_numeric(
+        encoded_opponents["clube_adversario_id"],
+        errors="coerce",
+    ).astype("Int64").astype(str)
+    encoding_lookup = (
+        encoded_opponents
+        .drop_duplicates("encoding_key", keep="last")
+        .set_index("encoding_key")["clube_adv_enc"]
+    )
+
+    market_df = market_df.copy()
+    target_key = pd.to_numeric(
+        market_df["clube_adversario_id"],
+        errors="coerce",
+    ).astype("Int64").astype(str)
+    target_encoding = target_key.map(encoding_lookup)
+    has_target_opponent = market_df["clube_adversario_id"].notna()
+    if "clube_adv_enc" in market_df.columns:
+        market_df.loc[has_target_opponent, "clube_adv_enc"] = target_encoding[
+            has_target_opponent
+        ]
+    else:
+        market_df["clube_adv_enc"] = target_encoding
 
     return market_df
 
@@ -448,33 +382,211 @@ def _player_score(
     return float(value)
 
 
-def _price_values(players: pd.DataFrame) -> pd.Series:
-    if "preco" not in players.columns:
+def _price_values(players: pd.DataFrame, price_column: str = "preco") -> pd.Series:
+    if price_column not in players.columns:
         return pd.Series(float("inf"), index=players.index)
 
-    return pd.to_numeric(players["preco"], errors="coerce").fillna(float("inf"))
+    return pd.to_numeric(players[price_column], errors="coerce").fillna(float("inf"))
 
 
-def _luxury_reserve_candidate(
+def _score_values(
+    players: pd.DataFrame,
+    score_column: str,
+    fallback_column: str = "pontos_previstos",
+) -> pd.Series:
+    column = score_column if score_column in players.columns else fallback_column
+    if column not in players.columns:
+        return pd.Series(float("-inf"), index=players.index)
+
+    return pd.to_numeric(players[column], errors="coerce").fillna(float("-inf"))
+
+
+def _select_indices_by_score(
+    players: pd.DataFrame,
+    score_column: str,
+    count: int,
+) -> list:
+    if count <= 0 or players.empty:
+        return []
+
+    scores = _score_values(players, score_column)
+    return scores.sort_values(ascending=False).head(count).index.tolist()
+
+
+def _reserve_price_threshold(
     position_pool: pd.DataFrame,
-    n_players: int,
-) -> tuple[float, int] | None:
-    candidates = position_pool.head(n_players + 1).copy()
-    if len(candidates) <= n_players:
+    starter_indices: list,
+    price_column: str,
+) -> float:
+    if not starter_indices:
+        return float("-inf")
+
+    starters = position_pool.loc[position_pool.index.intersection(starter_indices)]
+    if starters.empty:
+        return float("-inf")
+
+    return float(_price_values(starters, price_column).min())
+
+
+def _select_reserve_index(
+    position_pool: pd.DataFrame,
+    starter_indices: list,
+    price_column: str,
+    score_column: str,
+    candidate_pool: pd.DataFrame | None = None,
+) -> int | None:
+    threshold = _reserve_price_threshold(position_pool, starter_indices, price_column)
+    if threshold in {float("-inf"), float("inf")}:
         return None
 
-    prices = _price_values(candidates)
+    pool = candidate_pool if candidate_pool is not None else position_pool
+    candidates = pool.drop(index=starter_indices, errors="ignore").copy()
+    if candidates.empty:
+        return None
+
+    cheaper_mask = _price_values(candidates, price_column) < threshold
+    candidates = candidates[cheaper_mask]
+    if candidates.empty:
+        return None
+
+    return _select_indices_by_score(candidates, score_column, 1)[0]
+
+
+def _attack_selection_counts(
+    position: int,
+    n_players: int,
+    policy: dict | None = None,
+) -> tuple[int, int, int]:
+    position_policy = (policy or DEFAULT_ATTACK_SELECTION_POLICY).get(
+        int(position),
+        DEFAULT_ATTACK_SELECTION_POLICY.get(int(position), {}),
+    )
+    risk_count = int(position_policy.get("risk", 1))
+    stable_count = int(position_policy.get("stable", 0))
+    default_count = int(
+        position_policy.get(
+            "default",
+            max(n_players - risk_count - stable_count, 0),
+        )
+    )
+
+    risk_count = max(risk_count, 0)
+    stable_count = max(stable_count, 0)
+    default_count = max(default_count, 0)
+    if risk_count + stable_count > n_players:
+        stable_count = max(n_players - risk_count, 0)
+        default_count = 0
+    elif risk_count + stable_count + default_count > n_players:
+        default_count = max(n_players - risk_count - stable_count, 0)
+    if risk_count > n_players:
+        risk_count = n_players
+        stable_count = 0
+        default_count = 0
+
+    return risk_count, stable_count, default_count
+
+
+def _select_attack_starters(
+    position_pool: pd.DataFrame,
+    n_players: int,
+    high_risk_score_column: str,
+    safe_score_column: str,
+    risk_count: int,
+    stable_count: int,
+    default_count: int = 0,
+) -> tuple[list, list, pd.DataFrame]:
+    top_candidates = position_pool.head(max(ATTACK_CANDIDATE_LIMIT, n_players)).copy()
+    if n_players <= 0 or top_candidates.empty:
+        return [], [], top_candidates
+
+    selected_indices = []
+    high_risk_indices = _select_indices_by_score(
+        top_candidates,
+        high_risk_score_column,
+        min(risk_count, n_players),
+    )
+    selected_indices.extend(high_risk_indices)
+
+    safe_candidates = top_candidates.drop(index=selected_indices, errors="ignore")
+    selected_indices.extend(
+        _select_indices_by_score(
+            safe_candidates,
+            safe_score_column,
+            min(stable_count, n_players - len(selected_indices)),
+        )
+    )
+
+    default_candidates = top_candidates.drop(index=selected_indices, errors="ignore")
+    selected_indices.extend(
+        _select_indices_by_score(
+            default_candidates,
+            "pontos_previstos",
+            min(default_count, n_players - len(selected_indices)),
+        )
+    )
+
+    if len(selected_indices) < n_players:
+        fallback_candidates = top_candidates.drop(index=selected_indices, errors="ignore")
+        selected_indices.extend(
+            _select_indices_by_score(
+                fallback_candidates,
+                "pontos_previstos",
+                n_players - len(selected_indices),
+            )
+        )
+
+    if len(selected_indices) < n_players:
+        fallback_candidates = position_pool.drop(index=selected_indices, errors="ignore")
+        selected_indices.extend(
+            _select_indices_by_score(
+                fallback_candidates,
+                "pontos_previstos",
+                n_players - len(selected_indices),
+            )
+        )
+
+    return selected_indices, high_risk_indices, top_candidates
+
+
+def _select_cheapest_reserve_from_candidates(
+    position_pool: pd.DataFrame,
+    candidate_indices: list,
+    price_column: str,
+) -> int | None:
+    candidates = position_pool.loc[position_pool.index.intersection(candidate_indices)]
+    if len(candidates) <= 1:
+        return None
+
+    prices = _price_values(candidates, price_column)
     reserve_index = prices.idxmin()
     starter_prices = prices.drop(index=reserve_index)
     if starter_prices.empty or prices.loc[reserve_index] >= starter_prices.min():
         return None
 
-    reserve_points = pd.to_numeric(
-        pd.Series([candidates.loc[reserve_index, "pontos_previstos"]]),
-        errors="coerce",
-    ).fillna(float("-inf")).iloc[0]
+    return reserve_index
 
-    return float(reserve_points), reserve_index
+
+def _best_risk_captain_index(
+    players: pd.DataFrame,
+    risk_indices: list,
+    starter_indices: list,
+    captain_score_column: str,
+) -> int | None:
+    eligible_indices = [
+        player_index
+        for player_index in risk_indices
+        if player_index in starter_indices
+    ]
+    if not eligible_indices:
+        eligible_indices = starter_indices
+    if not eligible_indices:
+        return None
+
+    candidates = players.loc[players.index.intersection(eligible_indices)]
+    if candidates.empty:
+        return None
+
+    return _score_values(candidates, captain_score_column).idxmax()
 
 
 def assign_captain(
@@ -702,6 +814,12 @@ def build_team(
     formation: dict = FORMATION,
     odds_filter: dict | None = ODDS_FILTER,
     include_reserves: bool = False,
+    captain_score_column: str = "captain_score",    
+    captain_std_column: str = "std_pts_5r",
+    captain_std_weight: float = 0.8,
+    align_luxury_reserve_with_captain: bool = True,
+    reserve_price_column: str = "preco",
+    attack_selection_policy: dict | None = None,
 ) -> pd.DataFrame:
     df = market_df[market_df['status_id'] == STATUS["Provavel"]].copy()
     df["pontos_previstos"] = 0.0
@@ -717,9 +835,17 @@ def build_team(
         X = model_feature_matrix(df.loc[mask], feat_cols)
         df.loc[mask, "pontos_previstos"] = model.predict(X)
 
+    predicted_points = pd.to_numeric(df["pontos_previstos"], errors="coerce").fillna(0.0)
+    if captain_std_column in df.columns:
+        captain_std = pd.to_numeric(df[captain_std_column], errors="coerce").fillna(0.0)
+    else:
+        captain_std = pd.Series(0.0, index=df.index)
+    safe_score_column = "safe_score"
+    df[captain_score_column] = predicted_points + captain_std_weight * captain_std
+    df[safe_score_column] = predicted_points - captain_std_weight * captain_std
+
     df = df.sort_values("pontos_previstos", ascending=False)
 
-    selected_players = []
     position_pools = {}
 
     for position in formation:
@@ -732,52 +858,147 @@ def build_team(
             )
         position_pools[position] = position_pool
 
-    reserve_candidates = []
-    for position in LUXURY_RESERVE_POSITIONS:
-        if position not in formation:
-            continue
-
-        candidate = _luxury_reserve_candidate(position_pools[position], formation[position])
-        if candidate is None:
-            continue
-
-        reserve_points, _ = candidate
-        reserve_candidates.append((reserve_points, position))
-
-    luxury_reserve_position = None
-    if reserve_candidates:
-        _, luxury_reserve_position = max(reserve_candidates)
+    position_selections = {}
+    attack_candidate_pools = {}
+    captain_position_candidates = {}
+    captain_position_risk_indices = {}
 
     for position, n_players in formation.items():
         position_pool = position_pools[position]
-        chosen = []
-        reserve_index = None
-        reserve_slots = 0 if int(position) == TEC_POSITION_ID else 1
-        selection_limit = n_players + reserve_slots
-
-        if int(position) == luxury_reserve_position:
-            candidate = _luxury_reserve_candidate(position_pool, n_players)
-            if candidate is not None:
-                _, reserve_index = candidate
-
-        for _, player in position_pool.iterrows():            
-            if len(chosen) >= selection_limit:
-                break
-
-            player = player.copy()
-            player["reserva"] = (
-                player.name == reserve_index
-                if reserve_index is not None
-                else len(chosen) >= n_players
+        if int(position) in LUXURY_RESERVE_POSITIONS:
+            captain_candidate_indices, captain_risk_indices, captain_candidates = _select_attack_starters(
+                position_pool,
+                (
+                    CAPTAIN_POSITION_SELECTION_POLICY.get("risk", 0)
+                    + CAPTAIN_POSITION_SELECTION_POLICY.get("stable", 0)
+                    + CAPTAIN_POSITION_SELECTION_POLICY.get("default", 0)
+                ),
+                captain_score_column,
+                safe_score_column,
+                CAPTAIN_POSITION_SELECTION_POLICY["risk"],
+                CAPTAIN_POSITION_SELECTION_POLICY["stable"],
+                CAPTAIN_POSITION_SELECTION_POLICY.get("default", 0),
             )
-            player["reserva_de_luxo"] = player.name == reserve_index
-            chosen.append(player)
+            captain_position_candidates[position] = captain_candidate_indices
+            captain_position_risk_indices[position] = captain_risk_indices
+            attack_candidate_pools[position] = captain_candidates
 
-        selected_players.extend(chosen)
+            risk_count, stable_count, default_count = _attack_selection_counts(
+                int(position),
+                n_players,
+                attack_selection_policy,
+            )
+            starter_indices, _, _ = _select_attack_starters(
+                position_pool,
+                n_players,
+                captain_score_column,
+                safe_score_column,
+                risk_count,
+                stable_count,
+                default_count,
+            )
+        else:
+            starter_indices = position_pool.head(n_players).index.tolist()
+
+        position_selections[position] = {
+            "starter_indices": starter_indices,
+            "reserve_index": None,
+            "reserve_de_luxo": False,
+        }
+
+    captain_index = None
+    captain_position = None
+    if align_luxury_reserve_with_captain and captain_position_risk_indices:
+        high_risk_candidate_indices = [
+            player_index
+            for position_indices in captain_position_risk_indices.values()
+            for player_index in position_indices
+        ]
+        high_risk_rows = df.loc[high_risk_candidate_indices]
+        if not high_risk_rows.empty:
+            captain_position_index = _score_values(high_risk_rows, captain_score_column).idxmax()
+            captain_position = int(df.loc[captain_position_index, "posicao_id"])
+
+            captain_candidate_indices = captain_position_candidates.get(captain_position, [])
+            reserve_index = _select_cheapest_reserve_from_candidates(
+                position_pools[captain_position],
+                captain_candidate_indices,
+                reserve_price_column,
+            )
+            if reserve_index is not None:
+                starter_indices = [
+                    player_index
+                    for player_index in captain_candidate_indices
+                    if player_index != reserve_index
+                ][: formation[captain_position]]
+                position_selections[captain_position]["starter_indices"] = starter_indices
+                position_selections[captain_position]["reserve_index"] = reserve_index
+                position_selections[captain_position]["reserve_de_luxo"] = True
+            else:
+                starter_indices = position_selections[captain_position]["starter_indices"]
+
+            captain_index = _best_risk_captain_index(
+                df,
+                captain_position_risk_indices.get(captain_position, []),
+                starter_indices,
+                captain_score_column,
+            )
+
+    for position, selection in position_selections.items():
+        if int(position) == TEC_POSITION_ID:
+            continue
+        if selection["reserve_index"] is not None:
+            continue
+        if captain_position is not None and int(position) == captain_position:
+            continue
+
+        reserve_score_column = "pontos_previstos"
+        reserve_candidate_pool = None
+        reserve_de_luxo = False
+        if (
+            align_luxury_reserve_with_captain
+            and captain_position is not None
+            and int(position) == captain_position
+        ):
+            reserve_score_column = safe_score_column
+            reserve_candidate_pool = attack_candidate_pools.get(position)
+            reserve_de_luxo = True
+
+        reserve_index = _select_reserve_index(
+            position_pools[position],
+            selection["starter_indices"],
+            reserve_price_column,
+            reserve_score_column,
+            candidate_pool=reserve_candidate_pool,
+        )
+        if reserve_index is None:
+            reserve_de_luxo = False
+
+        selection["reserve_index"] = reserve_index
+        selection["reserve_de_luxo"] = reserve_de_luxo
+
+    selected_players = []
+    for position, selection in position_selections.items():
+        position_pool = position_pools[position]
+        selected_indices = list(selection["starter_indices"])
+        reserve_index = selection["reserve_index"]
+        if reserve_index is not None:
+            selected_indices.append(reserve_index)
+
+        for player_index in selected_indices:
+            player = position_pool.loc[player_index].copy()
+            player["reserva"] = player_index == reserve_index
+            player["reserva_de_luxo"] = (
+                selection["reserve_de_luxo"]
+                and player_index == reserve_index
+            )
+            player[CAPTAIN_COL] = player_index == captain_index
+            selected_players.append(player)
 
     team_df = pd.DataFrame(selected_players)
     team_df = team_df.sort_values(["reserva", "posicao_id", "pontos_previstos"], ascending=[True, True, False])
-    team_df = assign_captain(team_df, score_column="pontos_previstos")
+    if team_df.empty or not team_df[CAPTAIN_COL].fillna(False).astype(bool).any():
+        team_df = assign_captain(team_df, score_column="pontos_previstos")
 
     if include_reserves:
         return team_df.reset_index(drop=True)
@@ -820,7 +1041,7 @@ def imprimir_time(time_df: pd.DataFrame):
 
 
 def prepare_market_data(
-    df_feat: pd.DataFrame,
+    df_players_per_round: pd.DataFrame,
     rodada_alvo: int,
     season: int = CURRENT_SEASON,
     df_odds: pd.DataFrame | None = None,
@@ -838,24 +1059,30 @@ def prepare_market_data(
     market_df["temporada"]  = season
     market_df["rodada"]     = rodada_alvo
 
-    feature_cols = ["atleta_id"] + [c for c in FEATURE_COLS if c not in market_df.columns]
-    previous_features = df_feat.loc[
-        (df_feat["temporada"] == season)
-        & (df_feat["rodada"] < rodada_alvo)
-    ].copy()
-    sort_cols = ["temporada", "rodada"]
+    live_market_values = market_df[
+        [col for col in ["atleta_id", "preco", "media"] if col in market_df.columns]
+    ].drop_duplicates("atleta_id")
+    market_df = build_target_round_market_features(
+        df_players_per_round=df_players_per_round,
+        df_matches=df_matches,
+        df_odds=df_odds,
+        df_market=market_df,
+        season=season,
+        rodada_alvo=rodada_alvo,
+    )
 
-    if previous_features.empty:
-        ultima_feat = pd.DataFrame(columns=feature_cols)
-    else:
-        ultima_feat = (
-            previous_features
-            .sort_values(sort_cols)
-            [feature_cols]
-            .drop_duplicates("atleta_id", keep="last")
-        )
+    market_df = market_df.merge(
+        live_market_values,
+        on="atleta_id",
+        how="left",
+        suffixes=("", "_atual"),
+    )
+    for col in ["preco", "media"]:
+        current_col = f"{col}_atual"
+        if current_col in market_df.columns:
+            market_df[col] = market_df[current_col].combine_first(market_df[col])
+            market_df = market_df.drop(columns=current_col)
 
-    market_df = market_df.merge(ultima_feat, on="atleta_id", how="left")
     for col in FEATURE_COLS:
         if col in market_df.columns:
             market_df[col] = market_df[col].fillna(
@@ -869,11 +1096,6 @@ def prepare_market_data(
         rodada_alvo,
         clubes_map,
     )
-
-    market_df = merge_target_round_odds(market_df, df_odds, season, rodada_alvo)
-    for col in ODDS_COLS:
-        if col in market_df.columns:
-            market_df[col] = market_df[col].fillna(1 / 3)
 
     return market_df
 
@@ -909,7 +1131,7 @@ def main():
     log.info(f"MAE médio por posição: {mae:.3f} pts | Features: {len(feature_cols)}")
 
     market_data = prepare_market_data(
-        features,
+        df_players_per_round,
         rodada_alvo,
         df_odds=df_odds,
         df_matches=df_matches,
