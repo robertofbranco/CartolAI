@@ -24,7 +24,7 @@ from cartola_data.current import (
     update_market,
     update_odds,
 )
-from cartola_data.file_manager import FileManager, PlayersDataset
+from cartola_data.file_manager import CurrentMarketDataset, FileManager, PlayersDataset
 from cartola_data.historic import get_players_data_from_caRtola, import_historic_season
 from cartola_data.transforms import deduplicate_by_key
 
@@ -158,6 +158,63 @@ def get_previous_round_players_data(api, current_round: int) -> bool:
         )
 
     return True
+
+
+def finalize_previous_round_status(current_round: int) -> bool:
+    """Apply the last saved market statuses to the round that just closed."""
+    if current_round is None or current_round < 2:
+        return False
+
+    completed_round = current_round - 1
+    market_dataset = CurrentMarketDataset(data_dir=DATA_DIR)
+    players_dataset = PlayersDataset(season=CURRENT_SEASON, data_dir=DATA_DIR)
+    if not market_dataset.exists() or not players_dataset.exists():
+        return False
+
+    market = market_dataset.read()
+    required_market_columns = {"temporada", "rodada", "atleta_id", "status_id"}
+    if market.empty or not required_market_columns.issubset(market.columns):
+        log.info(
+            "Mercado atual sem identificacao de temporada/rodada; "
+            "status historico nao sera finalizado nesta execucao."
+        )
+        return False
+
+    snapshot = market.loc[
+        (market["temporada"] == CURRENT_SEASON)
+        & (market["rodada"] == completed_round),
+        ["atleta_id", "status_id"],
+    ].dropna(subset=["atleta_id", "status_id"])
+    if snapshot.empty:
+        return False
+
+    status_by_atleta = (
+        snapshot.drop_duplicates("atleta_id", keep="last")
+        .set_index("atleta_id")["status_id"]
+    )
+    players = players_dataset.read()
+    if players.empty or not {"temporada", "rodada", "atleta_id"}.issubset(players.columns):
+        return False
+
+    round_mask = (
+        (players["temporada"] == CURRENT_SEASON)
+        & (players["rodada"] == completed_round)
+    )
+    updated_status = players.loc[round_mask, "atleta_id"].map(status_by_atleta)
+    matched_index = updated_status.index[updated_status.notna()]
+    if matched_index.empty:
+        return False
+
+    if "status_id" not in players.columns:
+        players["status_id"] = pd.NA
+    players.loc[matched_index, "status_id"] = updated_status.loc[matched_index]
+    players_dataset.write(players)
+    log.info(
+        "Status final da rodada %s atualizado para %s atletas.",
+        completed_round,
+        len(matched_index),
+    )
+    return True
             
 
 def merge_partitioned_parquets(
@@ -200,18 +257,19 @@ def run_collectors(args: argparse.Namespace) -> None:
     token = os.environ.get("CARTOLA_TOKEN")
     api = CartolaAPI(token=token)
     current_round = get_current_round(api)
-    update_market(api)
-    update_odds(api, current_round, CURRENT_SEASON, token)
-    if args.mercado_only:        
-        return
+    if not args.mercado_only:
+        collect_latest_api_data(
+            api=api,
+            current_round=current_round,
+            season=CURRENT_SEASON,
+        )
+        get_previous_round_players_data(api, current_round)
 
-    collect_latest_api_data(
-        api=api,
-        current_round=current_round,
-        season=CURRENT_SEASON
-    )
-    
-    get_previous_round_players_data(api, current_round)
+    # mercado_atual still contains the last snapshot of the completed round.
+    # Finalize it before replacing the file with the newly opened market.
+    finalize_previous_round_status(current_round)
+    update_market(api, current_round, CURRENT_SEASON, data_dir=DATA_DIR)
+    update_odds(api, current_round, CURRENT_SEASON, token)
 
 
 def main() -> None:
