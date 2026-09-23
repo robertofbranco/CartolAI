@@ -234,6 +234,103 @@ class CollectAllDataFlowTest(unittest.TestCase):
             self.assertEqual(row["media"], 7.25)
             self.assertEqual(row["jogos"], 3)
 
+    def test_update_market_tags_snapshot_with_season_and_round(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            api = MagicMock()
+            api.mercado.return_value = {
+                "atletas": [
+                    {
+                        "atleta_id": 101,
+                        "apelido": "Player 101",
+                        "posicao_id": 4,
+                        "clube_id": 263,
+                        "preco_num": 12.5,
+                        "media_num": 7.25,
+                        "status_id": 7,
+                        "jogos_num": 3,
+                    }
+                ]
+            }
+
+            current.update_market(api, current_round=5, season=2026, data_dir=data_dir)
+
+            market = pd.read_parquet(data_dir / "mercado_atual.parquet")
+            self.assertEqual(market["temporada"].tolist(), [2026])
+            self.assertEqual(market["rodada"].tolist(), [5])
+
+    def test_finalize_previous_round_updates_only_status_from_matching_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            pd.DataFrame(
+                [
+                    {"temporada": 2026, "rodada": 4, "atleta_id": 101, "status_id": 7},
+                    {"temporada": 2026, "rodada": 4, "atleta_id": 102, "status_id": 2},
+                ]
+            ).to_parquet(data_dir / "mercado_atual.parquet", index=False)
+            pd.DataFrame(
+                [
+                    {
+                        "temporada": 2026,
+                        "rodada": 3,
+                        "atleta_id": 101,
+                        "status_id": 6,
+                        "preco": 9.0,
+                    },
+                    {
+                        "temporada": 2026,
+                        "rodada": 4,
+                        "atleta_id": 101,
+                        "status_id": 6,
+                        "preco": 10.0,
+                    },
+                    {
+                        "temporada": 2026,
+                        "rodada": 4,
+                        "atleta_id": 103,
+                        "status_id": 5,
+                        "preco": 11.0,
+                    },
+                ]
+            ).to_parquet(data_dir / "jogadores_por_rodada_2026.parquet", index=False)
+
+            with (
+                patch.object(collect_latest_data, "DATA_DIR", data_dir),
+                patch.object(collect_latest_data, "CURRENT_SEASON", 2026),
+            ):
+                updated = collect_latest_data.finalize_previous_round_status(5)
+
+            self.assertTrue(updated)
+            players = pd.read_parquet(data_dir / "jogadores_por_rodada_2026.parquet")
+            statuses = players.set_index(["rodada", "atleta_id"])["status_id"]
+            self.assertEqual(statuses.loc[(3, 101)], 6)
+            self.assertEqual(statuses.loc[(4, 101)], 7)
+            self.assertEqual(statuses.loc[(4, 103)], 5)
+            self.assertEqual(
+                players.set_index(["rodada", "atleta_id"]).loc[(4, 101), "preco"],
+                10.0,
+            )
+
+    def test_finalize_previous_round_rejects_snapshot_for_another_round(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            pd.DataFrame(
+                [{"temporada": 2026, "rodada": 5, "atleta_id": 101, "status_id": 7}]
+            ).to_parquet(data_dir / "mercado_atual.parquet", index=False)
+            pd.DataFrame(
+                [{"temporada": 2026, "rodada": 4, "atleta_id": 101, "status_id": 6}]
+            ).to_parquet(data_dir / "jogadores_por_rodada_2026.parquet", index=False)
+
+            with (
+                patch.object(collect_latest_data, "DATA_DIR", data_dir),
+                patch.object(collect_latest_data, "CURRENT_SEASON", 2026),
+            ):
+                updated = collect_latest_data.finalize_previous_round_status(5)
+
+            self.assertFalse(updated)
+            players = pd.read_parquet(data_dir / "jogadores_por_rodada_2026.parquet")
+            self.assertEqual(players.iloc[0]["status_id"], 6)
+
     def test_run_collectors_wires_historic_current_and_current_players(self):
         args = Namespace(mercado_only=False)
         with tempfile.TemporaryDirectory() as tmp:
@@ -249,12 +346,22 @@ class CollectAllDataFlowTest(unittest.TestCase):
                 patch.object(collect_latest_data, "update_odds") as update_odds,
                 patch.object(collect_latest_data, "collect_latest_api_data") as collect_current,
                 patch.object(collect_latest_data, "get_previous_round_players_data") as get_players,
+                patch.object(
+                    collect_latest_data,
+                    "finalize_previous_round_status",
+                ) as finalize_status,
             ):
+                collection_order = []
+                collect_current.side_effect = lambda **kwargs: collection_order.append("current")
+                get_players.side_effect = lambda *args: collection_order.append("players")
+                finalize_status.side_effect = lambda *args: collection_order.append("finalize")
+                update_market.side_effect = lambda *args, **kwargs: collection_order.append("market")
+                update_odds.side_effect = lambda *args: collection_order.append("odds")
                 collect_latest_data.run_collectors(args)
 
             cartola_api.assert_called_once_with(token="token-123")
             get_round.assert_called_once_with(api)
-            update_market.assert_called_once_with(api)
+            update_market.assert_called_once_with(api, 5, 2026, data_dir=data_dir)
             update_odds.assert_called_once_with(api, 5, 2026, "token-123")
             collect_current.assert_called_once_with(
                 api=api,
@@ -262,6 +369,11 @@ class CollectAllDataFlowTest(unittest.TestCase):
                 season=2026,
             )
             get_players.assert_called_once_with(api, 5)
+            finalize_status.assert_called_once_with(5)
+            self.assertEqual(
+                collection_order,
+                ["current", "players", "finalize", "market", "odds"],
+            )
 
     def test_main_merge_only_skips_collectors(self):
         args = Namespace(
