@@ -42,7 +42,6 @@ from cartola_team_builder import (
 from cartola_model_training import (
     DEFAULT_MODEL_STRATEGY,
     available_model_strategies,
-    feature_cols_from_models,
     mean_mae_from_models,
     train_models_by_position,
 )
@@ -419,7 +418,6 @@ def rodar_backtest(
         except ValueError as e:
             log.warning(f"Rodada {rodada_alvo}: {e}")
             continue
-        feat_cols = feature_cols_from_models(models_by_pos)
         mae = mean_mae_from_models(models_by_pos)
         mae_por_posicao = mae_por_posicao_from_models(models_by_pos)
 
@@ -442,12 +440,6 @@ def rodar_backtest(
             season=season,
             rodada_alvo=rodada_alvo,
         )
-
-        for col in feat_cols:
-            if col in df_mercado_sim.columns:
-                df_mercado_sim[col] = df_mercado_sim[col].fillna(
-                    df_mercado_sim.groupby("posicao_id")[col].transform("median")
-                ).fillna(0)
 
         # Montar time com o modelo
         try:

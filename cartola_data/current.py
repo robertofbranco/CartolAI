@@ -409,12 +409,24 @@ def update_odds(api: CartolaAPI, current_round: int, season: int, token: str) ->
     log.info("Odds salvas: %s -> %s", len(new_odds), odds_file)
 
 
-def update_market(api: CartolaAPI):
+def update_market(
+    api: CartolaAPI,
+    current_round: int | None = None,
+    season: int = CURRENT_SEASON,
+    data_dir: Path = DATA_DIR,
+):
+    if current_round is None:
+        current_round = get_current_round(api)
+
     market = get_current_market(api)
     if market.empty:
         log.warning("Mercado atual vazio, nao sera atualizado.")
+        return
 
-    market_file = CurrentMarketDataset().write(market)
+    market["temporada"] = season
+    market["rodada"] = current_round
+
+    market_file = CurrentMarketDataset(data_dir=data_dir).write(market)
     log.info("Mercado atual salvo: %s atletas -> %s", len(market), market_file)
 
 
